@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -188,6 +190,18 @@ class TaskStoreTests(unittest.TestCase):
     def test_network_database_path_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "local disk"):
             task_store.resolve_db_path(r"\\server\share\tasks.sqlite3")
+
+    def test_database_path_inside_source_root_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source_root = Path(temp) / "products"
+            source_root.mkdir()
+            with mock.patch.dict(
+                os.environ,
+                {"COMPANY_VIDEO_PRODUCT_ROOTS": str(source_root), "COMPANY_VIDEO_ASSET_ROOTS": ""},
+                clear=False,
+            ):
+                with self.assertRaisesRegex(ValueError, "source root"):
+                    task_store.resolve_db_path(str(source_root / "tasks.sqlite3"))
 
     def test_adopt_existing_and_create_derived_job(self):
         with tempfile.TemporaryDirectory() as temp:

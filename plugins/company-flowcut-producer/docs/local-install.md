@@ -26,9 +26,10 @@ $env:COMPANY_VIDEO_PRODUCT_ROOTS = "<部门批准产品资料目录>"
 $env:COMPANY_VIDEO_ASSET_ROOTS = "<部门共享素材目录>"
 $env:COMPANY_VIDEO_OUTPUT_ROOT = "<部门成片目录>"
 $env:COMPANY_VIDEO_DB_PATH = "$env:LOCALAPPDATA\CompanyVideoWorkbench\tasks.sqlite3"
+$env:COMPANY_VIDEO_WORK_ROOT = "$env:LOCALAPPDATA\CompanyVideoWorkbench\work"
 ```
 
-素材和输出目录没有安全默认值，需要部门确定真实路径后配置。不要把 SQLite 放到网络共享。
+产品和素材变量只指向 NAS 共享目录，并按只读输入使用；素材和输出目录没有安全默认值，需要部门确定真实路径后配置。SQLite 和工作目录必须位于本机磁盘，不能放到 NAS/映射网络盘，也不能落在产品或素材根内。
 
 ## 4. 初始化和离线验证
 
@@ -41,7 +42,7 @@ python scripts\company_context.py preflight
 python scripts\company_context.py get-product --product-id "<真实产品名>" --max-chars 3000
 ```
 
-成功标准：结构和单元测试通过；产品根可读；SQLite 父目录可写；产品查询返回精确来源；仓库不存在被禁止的旧依赖或秘密。
+成功标准：结构和单元测试通过；产品根可读；SQLite 与工作目录的本机父目录可写且不与 NAS 源目录重叠；产品查询返回精确来源；仓库不存在被禁止的旧依赖或秘密。
 
 创建真实任务前，先用 `get-product --summary-only` 生成不含正文的来源摘要，并把该文件传给 `task_store.py create --source-context-file`。恢复任务时先 `list/read`；如果数据库路径错误，命令会报错且不会静默创建空库。
 

@@ -60,6 +60,24 @@ def main() -> int:
             json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             errors.append(f"invalid JSON {path.relative_to(REPO_ROOT)}: {exc}")
+    config_path = PLUGIN_ROOT / "department-config" / "company-video.json"
+    if config_path.is_file():
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        storage = config.get("storage", {})
+        policies = config.get("policies", {})
+        for source_name in ("product_sources", "asset_sources"):
+            if storage.get(source_name, {}).get("access") != "read_only":
+                errors.append(f"{source_name} must declare read_only access")
+        for local_name in ("task_database", "local_work_root"):
+            local_config = storage.get(local_name, {})
+            if local_config.get("network_share_policy") != "prohibited":
+                errors.append(f"{local_name} must prohibit network shares")
+            if local_config.get("source_overlap_policy") != "prohibited":
+                errors.append(f"{local_name} must prohibit source-root overlap")
+        if policies.get("runtime_storage") != "local_only":
+            errors.append("runtime_storage policy must be local_only")
+        if policies.get("nas_sources") != "read_only":
+            errors.append("nas_sources policy must be read_only")
     cases_path = PLUGIN_ROOT / "templates" / "test-cases" / "two-day-video-flow.json"
     if cases_path.is_file():
         payload = json.loads(cases_path.read_text(encoding="utf-8"))

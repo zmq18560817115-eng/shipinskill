@@ -144,6 +144,8 @@ def resolve_db_path(value: str | None) -> Path:
     path = Path(os.path.expandvars(raw)) if raw.strip() else default_db_path()
     if _is_network_path(path):
         raise ValueError("SQLite task database must be on a local disk, not a network share")
+    if any(_paths_overlap(path, root) for root in _configured_source_roots()):
+        raise ValueError("SQLite task database must not be stored inside a configured product or asset source root")
     if path.name in {"", ".", ".."} or path.suffix.lower() not in {".sqlite", ".sqlite3", ".db"}:
         raise ValueError("task database path must name a .sqlite, .sqlite3, or .db file")
     return path.resolve()
@@ -161,6 +163,40 @@ def _is_network_path(path: Path) -> bool:
         return int(ctypes.windll.kernel32.GetDriveTypeW(drive_root)) == 4
     except (AttributeError, OSError, ValueError):
         return False
+
+
+def _normalized_path(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(os.path.expandvars(str(path))))
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    left_value = _normalized_path(left)
+    right_value = _normalized_path(right)
+    try:
+        common = os.path.commonpath([left_value, right_value])
+    except ValueError:
+        return False
+    return common in {left_value, right_value}
+
+
+def _configured_source_roots() -> list[Path]:
+    try:
+        config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        config = {}
+    roots: list[Path] = []
+    for kind, fallback_env in (
+        ("product_sources", "COMPANY_VIDEO_PRODUCT_ROOTS"),
+        ("asset_sources", "COMPANY_VIDEO_ASSET_ROOTS"),
+    ):
+        entry = config.get("storage", {}).get(kind, {})
+        env_name = str(entry.get("paths_env") or fallback_env)
+        override = os.environ.get(env_name, "").strip()
+        values = [item.strip() for item in override.split(";") if item.strip()] if override else [
+            str(item) for item in entry.get("paths", [])
+        ]
+        roots.extend(Path(os.path.expandvars(item)) for item in values)
+    return roots
 
 
 def connect(db_path: Path) -> sqlite3.Connection:

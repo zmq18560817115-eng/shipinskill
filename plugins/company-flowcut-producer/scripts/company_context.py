@@ -73,6 +73,16 @@ def task_db_path(config: dict[str, Any]) -> Path:
     return Path(base) / "CompanyVideoWorkbench" / "tasks.sqlite3"
 
 
+def local_work_root(config: dict[str, Any]) -> Path:
+    entry = config.get("storage", {}).get("local_work_root", {})
+    env_name = str(entry.get("path_env") or "COMPANY_VIDEO_WORK_ROOT")
+    raw = os.environ.get(env_name, "").strip() or str(entry.get("default_local") or "")
+    if raw:
+        return Path(os.path.expandvars(raw))
+    base = os.environ.get("LOCALAPPDATA", "").strip() or str(Path.home() / ".local" / "share")
+    return Path(base) / "CompanyVideoWorkbench" / "work"
+
+
 def output_root(config: dict[str, Any]) -> Path | None:
     entry = config.get("storage", {}).get("output_root", {})
     env_name = str(entry.get("path_env") or "COMPANY_VIDEO_OUTPUT_ROOT")
@@ -88,8 +98,36 @@ def path_status(path: Path, *, kind: str) -> dict[str, Any]:
         "exists": exists,
         "readable": exists and os.access(path, os.R_OK),
         "writable": exists and os.access(path, os.W_OK),
-        "source_type": "nas" if str(path).startswith("\\\\") else "local",
+        "source_type": "nas" if _is_network_path(path) else "local",
     }
+
+
+def _is_network_path(path: Path) -> bool:
+    if str(path).startswith("\\\\"):
+        return True
+    if os.name != "nt" or not path.drive:
+        return False
+    try:
+        import ctypes
+
+        drive_root = f"{path.drive}\\"
+        return int(ctypes.windll.kernel32.GetDriveTypeW(drive_root)) == 4
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _normalized_path(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(os.path.expandvars(str(path))))
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    left_value = _normalized_path(left)
+    right_value = _normalized_path(right)
+    try:
+        common = os.path.commonpath([left_value, right_value])
+    except ValueError:
+        return False
+    return common in {left_value, right_value}
 
 
 def _nearest_existing_parent(path: Path) -> Path | None:
@@ -102,15 +140,40 @@ def _nearest_existing_parent(path: Path) -> Path | None:
 
 
 def preflight(config: dict[str, Any]) -> dict[str, Any]:
-    product_sources = [path_status(path, kind="product_source") for path in configured_roots(config, "product_sources")]
-    asset_sources = [path_status(path, kind="asset_source") for path in configured_roots(config, "asset_sources")]
+    product_roots = configured_roots(config, "product_sources")
+    asset_roots = configured_roots(config, "asset_sources")
+    source_roots = product_roots + asset_roots
+    product_sources = [
+        {**path_status(path, kind="product_source"), "access_policy": "read_only"}
+        for path in product_roots
+    ]
+    asset_sources = [
+        {**path_status(path, kind="asset_source"), "access_policy": "read_only"}
+        for path in asset_roots
+    ]
     db = task_db_path(config)
     db_parent = _nearest_existing_parent(db)
-    db_is_network = str(db).startswith("\\\\")
+    db_is_network = _is_network_path(db)
+    work = local_work_root(config)
+    work_parent = _nearest_existing_parent(work / ".write-probe")
+    work_is_network = _is_network_path(work)
+    violations = []
+    if db_is_network:
+        violations.append("task_database_on_network_share")
+    if work_is_network:
+        violations.append("local_work_root_on_network_share")
+    if any(_paths_overlap(db, root) for root in source_roots):
+        violations.append("task_database_overlaps_source_root")
+    if any(_paths_overlap(work, root) for root in source_roots):
+        violations.append("local_work_root_overlaps_source_root")
+    if db_parent is None or not os.access(db_parent, os.W_OK):
+        violations.append("task_database_parent_not_writable")
+    if work_parent is None or not os.access(work_parent, os.W_OK):
+        violations.append("local_work_root_parent_not_writable")
     output = output_root(config)
     return {
         "ok_for_task_creation": any(item["readable"] for item in product_sources)
-        and db_parent is not None and os.access(db_parent, os.W_OK) and not db_is_network,
+        and not violations,
         "product_sources": product_sources,
         "asset_sources": asset_sources,
         "task_store": {
@@ -120,7 +183,24 @@ def preflight(config: dict[str, Any]) -> dict[str, Any]:
             "parent_for_creation": str(db_parent) if db_parent else None,
             "parent_writable": bool(db_parent and os.access(db_parent, os.W_OK)),
             "network_share": db_is_network,
-            "policy": "local disk required; one active writer per task",
+            "overlaps_source_root": any(_paths_overlap(db, root) for root in source_roots),
+            "policy": "local disk required; source-root overlap prohibited; one active writer per task",
+        },
+        "local_work_root": {
+            "path": str(work),
+            "exists": work.exists(),
+            "parent_for_creation": str(work_parent) if work_parent else None,
+            "parent_writable": bool(work_parent and os.access(work_parent, os.W_OK)),
+            "network_share": work_is_network,
+            "overlaps_source_root": any(_paths_overlap(work, root) for root in source_roots),
+            "policy": "local disk required; source-root overlap prohibited",
+        },
+        "data_boundary": {
+            "source_access": "read_only",
+            "source_roots_mutated": False,
+            "runtime_storage": "local_only",
+            "valid": not violations,
+            "violations": violations,
         },
         "output_root": path_status(output, kind="output_root") if output else {
             "configured": False,
@@ -171,7 +251,7 @@ def get_product(config: dict[str, Any], product_id: str, max_chars: int) -> dict
             text = raw.decode("utf-8", errors="replace")
             item: dict[str, Any] = {
                 "path": str(path),
-                "source_type": "nas" if str(path).startswith("\\\\") else "local",
+                "source_type": "nas" if _is_network_path(path) else "local",
                 "format": path.suffix.lower().lstrip("."),
                 "sha256": hashlib.sha256(raw).hexdigest(),
                 "size_bytes": stat.st_size,
@@ -233,7 +313,7 @@ def list_assets(config: dict[str, Any], product_id: str, query: str, limit: int)
                 "kind": kind,
                 "size_bytes": stat.st_size,
                 "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds"),
-                "source_type": "nas" if str(path).startswith("\\\\") else "local",
+                "source_type": "nas" if _is_network_path(path) else "local",
                 "authorization": "unknown_until_catalogued",
             })
             if len(result) >= max(1, min(limit, 200)):

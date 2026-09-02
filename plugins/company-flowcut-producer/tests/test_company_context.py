@@ -53,12 +53,15 @@ class CompanyContextTests(unittest.TestCase):
 
     def test_preflight_is_standalone_and_reports_unconfigured_assets(self):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
+            base = Path(temp)
+            root = base / "products"
+            root.mkdir()
             config = {
                 "storage": {
                     "product_sources": {"paths": [str(root)]},
                     "asset_sources": {"paths": []},
-                    "task_database": {"default_local": str(root / "tasks.sqlite3")},
+                    "task_database": {"default_local": str(base / "runtime" / "tasks.sqlite3")},
+                    "local_work_root": {"default_local": str(base / "runtime" / "work")},
                     "output_root": {"path": ""},
                 }
             }
@@ -66,8 +69,70 @@ class CompanyContextTests(unittest.TestCase):
             self.assertTrue(payload["ok_for_task_creation"])
             self.assertEqual(payload["task_store"]["backend"], "standalone_sqlite")
             self.assertEqual(payload["asset_sources"], [])
+            self.assertEqual(payload["product_sources"][0]["access_policy"], "read_only")
+            self.assertEqual(payload["data_boundary"]["runtime_storage"], "local_only")
+            self.assertTrue(payload["data_boundary"]["valid"])
             self.assertNotIn("company_api", payload)
             self.assertNotIn("database_environment", payload)
+
+    def test_preflight_blocks_runtime_paths_overlapping_sources(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "nas-source"
+            root.mkdir()
+            config = {
+                "storage": {
+                    "product_sources": {"paths": [str(root)]},
+                    "asset_sources": {"paths": []},
+                    "task_database": {"default_local": str(root / "runtime" / "tasks.sqlite3")},
+                    "local_work_root": {"default_local": str(root / "runtime" / "work")},
+                }
+            }
+            payload = context.preflight(config)
+            self.assertFalse(payload["ok_for_task_creation"])
+            self.assertIn("task_database_overlaps_source_root", payload["data_boundary"]["violations"])
+            self.assertIn("local_work_root_overlaps_source_root", payload["data_boundary"]["violations"])
+
+    def test_preflight_blocks_network_work_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            products = base / "products"
+            products.mkdir()
+            work = base / "mapped-network-work"
+            config = {
+                "storage": {
+                    "product_sources": {"paths": [str(products)]},
+                    "asset_sources": {"paths": []},
+                    "task_database": {"default_local": str(base / "runtime" / "tasks.sqlite3")},
+                    "local_work_root": {"default_local": str(work)},
+                }
+            }
+            original = context._is_network_path
+            with mock.patch.object(
+                context,
+                "_is_network_path",
+                side_effect=lambda path: Path(path) == work or original(Path(path)),
+            ):
+                payload = context.preflight(config)
+            self.assertFalse(payload["ok_for_task_creation"])
+            self.assertIn("local_work_root_on_network_share", payload["data_boundary"]["violations"])
+
+    def test_preflight_does_not_create_runtime_directories(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            products = base / "products"
+            products.mkdir()
+            runtime = base / "runtime"
+            config = {
+                "storage": {
+                    "product_sources": {"paths": [str(products)]},
+                    "asset_sources": {"paths": []},
+                    "task_database": {"default_local": str(runtime / "tasks.sqlite3")},
+                    "local_work_root": {"default_local": str(runtime / "work")},
+                }
+            }
+            payload = context.preflight(config)
+            self.assertTrue(payload["ok_for_task_creation"])
+            self.assertFalse(runtime.exists())
 
     def test_product_id_cannot_escape_configured_root(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -121,7 +186,7 @@ class CompanyContextTests(unittest.TestCase):
 
     def test_config_is_valid_json(self):
         payload = json.loads((PLUGIN_ROOT / "department-config" / "company-video.json").read_text(encoding="utf-8"))
-        self.assertEqual(payload["config_version"], "2.0")
+        self.assertEqual(payload["config_version"], "2.1")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 {
-  "config_version": "2.0",
+  "config_version": "2.1",
   "department": "company-video-team",
   "product_catalog": [],
   "storage": {
@@ -7,15 +7,24 @@
       "path_env": "COMPANY_VIDEO_DB_PATH",
       "default_local": "%LOCALAPPDATA%\\CompanyVideoWorkbench\\tasks.sqlite3",
       "backend": "standalone_sqlite",
-      "network_share_policy": "prohibited"
+      "network_share_policy": "prohibited",
+      "source_overlap_policy": "prohibited"
+    },
+    "local_work_root": {
+      "path_env": "COMPANY_VIDEO_WORK_ROOT",
+      "default_local": "%LOCALAPPDATA%\\CompanyVideoWorkbench\\work",
+      "network_share_policy": "prohibited",
+      "source_overlap_policy": "prohibited"
     },
     "product_sources": {
       "paths_env": "COMPANY_VIDEO_PRODUCT_ROOTS",
-      "paths": []
+      "paths": [],
+      "access": "read_only"
     },
     "asset_sources": {
       "paths_env": "COMPANY_VIDEO_ASSET_ROOTS",
-      "paths": []
+      "paths": [],
+      "access": "read_only"
     },
     "output_root": {
       "path_env": "COMPANY_VIDEO_OUTPUT_ROOT",
@@ -35,6 +44,8 @@
     "destructive_edits": "confirm_each_operation",
     "competitor_material": "structure_and_style_reference_only",
     "task_state": "standalone_sqlite",
+    "runtime_storage": "local_only",
+    "nas_sources": "read_only",
     "task_deletion": "not_supported"
   }
 }

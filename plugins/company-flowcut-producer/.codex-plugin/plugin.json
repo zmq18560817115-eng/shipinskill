@@ -1,7 +1,7 @@
 {
   "name": "company-flowcut-producer",
-  "version": "0.2.0+codex.20260902035609",
-  "description": "Standalone company video-production orchestrator using NAS product data, a local SQLite task store, and ChatCut.",
+  "version": "0.2.0+codex.20260902065759",
+  "description": "Company video orchestrator using read-only NAS sources, local runtime storage, and ChatCut.",
   "author": {
     "name": "Company Video Platform Team"
   },

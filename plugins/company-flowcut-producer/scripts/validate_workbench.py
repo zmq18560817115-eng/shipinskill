@@ -21,11 +21,17 @@ REQUIRED = [
     PLUGIN_ROOT / "templates" / "test-cases" / "two-day-video-flow.json",
     PLUGIN_ROOT / "scripts" / "company_context.py",
     PLUGIN_ROOT / "scripts" / "material_planner.py",
+    PLUGIN_ROOT / "scripts" / "template_service.py",
     PLUGIN_ROOT / "scripts" / "task_store.py",
     PLUGIN_ROOT / "templates" / "material-catalog.schema.json",
     PLUGIN_ROOT / "templates" / "material-catalog.example.json",
     PLUGIN_ROOT / "templates" / "shot-script.schema.json",
     PLUGIN_ROOT / "templates" / "shot-script.example.json",
+    PLUGIN_ROOT / "templates" / "remix-template.schema.json",
+    PLUGIN_ROOT / "templates" / "remix-template.example.json",
+    PLUGIN_ROOT / "templates" / "batch-remix-request.schema.json",
+    PLUGIN_ROOT / "templates" / "batch-remix-request.example.json",
+    PLUGIN_ROOT / "skills" / "company-video-producer" / "references" / "template-remix.md",
     PLUGIN_ROOT / "docs" / "system-architecture.md",
     PLUGIN_ROOT / "docs" / "data-source-contract.md",
     PLUGIN_ROOT / "docs" / "local-install.md",
@@ -70,7 +76,7 @@ def main() -> int:
         config = json.loads(config_path.read_text(encoding="utf-8"))
         storage = config.get("storage", {})
         policies = config.get("policies", {})
-        for source_name in ("product_sources", "asset_sources"):
+        for source_name in ("product_sources", "asset_sources", "template_sources"):
             if storage.get(source_name, {}).get("access") != "read_only":
                 errors.append(f"{source_name} must declare read_only access")
         for local_name in ("task_database", "local_work_root"):
@@ -89,6 +95,12 @@ def main() -> int:
             errors.append("script asset matching must use deterministic hard constraints")
         if policies.get("chatcut_import") != "selection_manifest_only":
             errors.append("ChatCut import must be limited to the selection manifest")
+        if policies.get("template_scripts") != "approved_read_only_templates_only":
+            errors.append("template scripts must be approved and read only")
+        if policies.get("bulk_remix") != "deterministic_template_and_selection_manifests":
+            errors.append("bulk remix must generate deterministic manifests")
+        if policies.get("chatcut_bulk_execution") != "named_versions_preserve_existing_no_export_by_default":
+            errors.append("ChatCut bulk execution must preserve named versions and default to no export")
     cases_path = PLUGIN_ROOT / "templates" / "test-cases" / "two-day-video-flow.json"
     if cases_path.is_file():
         payload = json.loads(cases_path.read_text(encoding="utf-8"))

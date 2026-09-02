@@ -143,7 +143,8 @@ def _nearest_existing_parent(path: Path) -> Path | None:
 def preflight(config: dict[str, Any]) -> dict[str, Any]:
     product_roots = configured_roots(config, "product_sources")
     asset_roots = configured_roots(config, "asset_sources")
-    source_roots = product_roots + asset_roots
+    template_roots = configured_roots(config, "template_sources")
+    source_roots = product_roots + asset_roots + template_roots
     product_sources = [
         {**path_status(path, kind="product_source"), "access_policy": "read_only"}
         for path in product_roots
@@ -151,6 +152,10 @@ def preflight(config: dict[str, Any]) -> dict[str, Any]:
     asset_sources = [
         {**path_status(path, kind="asset_source"), "access_policy": "read_only"}
         for path in asset_roots
+    ]
+    template_sources = [
+        {**path_status(path, kind="template_source"), "access_policy": "read_only"}
+        for path in template_roots
     ]
     db = task_db_path(config)
     db_parent = _nearest_existing_parent(db)
@@ -177,6 +182,7 @@ def preflight(config: dict[str, Any]) -> dict[str, Any]:
         and not violations,
         "product_sources": product_sources,
         "asset_sources": asset_sources,
+        "template_sources": template_sources,
         "task_store": {
             "backend": "standalone_sqlite",
             "path": str(db),

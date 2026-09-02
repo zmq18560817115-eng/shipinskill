@@ -156,6 +156,28 @@ class MaterialPlannerTests(unittest.TestCase):
             self.assertEqual(result["rejected_assets"][0]["asset_id"], "A-REFERENCE")
             self.assertIn("reference_only_asset", result["rejected_assets"][0]["reasons"])
 
+    def test_selection_seed_rotates_equivalent_candidates_deterministically(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config, catalog, script = self._fixture(Path(temp))
+            alternate_path = Path(temp) / "示例产品" / "主图备选.jpg"
+            alternate_path.write_bytes(b"alternate-hero")
+            catalog["assets"].append(
+                self._asset(
+                    alternate_path,
+                    "A-HERO-ALT",
+                    ["product_hero"],
+                    ["product", "portable"],
+                    ["hook", "product"],
+                )
+            )
+            script["selection_seed"] = 1
+            first = planner.match_script(config, catalog, script)
+            second = planner.match_script(config, catalog, script)
+            self.assertTrue(first["ready_for_chatcut"])
+            self.assertEqual(first["selections"][0]["asset_id"], "A-HERO-ALT")
+            self.assertEqual(first["selections"][0]["selection_rank"], 2)
+            self.assertEqual(first["selection_manifest_sha256"], second["selection_manifest_sha256"])
+
     def test_unresolved_shot_blocks_chatcut_import(self):
         with tempfile.TemporaryDirectory() as temp:
             config, catalog, script = self._fixture(Path(temp))

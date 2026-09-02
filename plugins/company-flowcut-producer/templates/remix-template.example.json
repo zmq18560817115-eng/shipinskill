@@ -1,16 +1,23 @@
 {
-  "script_version": "1.0",
-  "script_id": "SCRIPT-EXAMPLE-15S",
-  "product_id": "示例产品",
-  "aspect_ratio": "9:16",
-  "target_duration_seconds": 15,
+  "template_version": "1.0",
+  "template_id": "PRODUCT-QUICK-REMIX-15S",
+  "display_name": "产品 15 秒快速混剪占位模板",
+  "revision": 1,
+  "status": "draft",
+  "product_scope": ["*"],
+  "match": {
+    "platforms": ["抖音", "视频号", "小红书"],
+    "aspect_ratios": ["9:16"],
+    "languages": ["zh-CN"],
+    "duration_seconds": 15,
+    "tags": ["quick-remix", "product"]
+  },
+  "max_outputs": 20,
   "max_asset_uses": 1,
-  "selection_seed": 0,
   "shots": [
     {
-      "shot_id": "S01",
-      "order": 1,
-      "line": "外出也能轻松携带。",
+      "slot_id": "S01",
+      "line_slot": "hook",
       "role": "hook",
       "duration_seconds": 5,
       "required_categories": ["product_hero"],
@@ -20,13 +27,11 @@
       "required_orientation": "any",
       "preferred_orientation": "portrait",
       "fit_mode": "contain",
-      "allow_generic": false,
-      "fact_refs": ["便携"]
+      "allow_generic": false
     },
     {
-      "shot_id": "S02",
-      "order": 2,
-      "line": "展示经过批准的核心功能。",
+      "slot_id": "S02",
+      "line_slot": "feature",
       "role": "feature",
       "duration_seconds": 5,
       "required_categories": ["feature_proof"],
@@ -36,13 +41,11 @@
       "required_orientation": "any",
       "preferred_orientation": "portrait",
       "fit_mode": "cover_blur_background",
-      "allow_generic": false,
-      "fact_refs": ["批准功能"]
+      "allow_generic": false
     },
     {
-      "shot_id": "S03",
-      "order": 3,
-      "line": "在真实使用场景中收尾。",
+      "slot_id": "S03",
+      "line_slot": "cta",
       "role": "cta",
       "duration_seconds": 5,
       "required_categories": ["usage_scene"],
@@ -52,8 +55,12 @@
       "required_orientation": "any",
       "preferred_orientation": "portrait",
       "fit_mode": "cover",
-      "allow_generic": false,
-      "fact_refs": []
+      "allow_generic": false
     }
-  ]
+  ],
+  "variants": [
+    {"variant_id": "ABC", "name": "产品—功能—场景", "shot_order": ["S01", "S02", "S03"]},
+    {"variant_id": "ACB", "name": "产品—场景—功能", "shot_order": ["S01", "S03", "S02"]}
+  ],
+  "notes": "占位示例；复制到 COMPANY_VIDEO_TEMPLATE_ROOTS 后，完成业务审核并将 status 改为 approved 才会参与自动选择。"
 }

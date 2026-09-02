@@ -518,6 +518,9 @@ def match_script(config: dict[str, Any], catalog: dict[str, Any], script: dict[s
     max_asset_uses = script.get("max_asset_uses", 1)
     if isinstance(max_asset_uses, bool) or not isinstance(max_asset_uses, int) or not 1 <= max_asset_uses <= 20:
         raise ValueError("max_asset_uses must be an integer from 1 to 20")
+    selection_seed = script.get("selection_seed", 0)
+    if isinstance(selection_seed, bool) or not isinstance(selection_seed, int) or not 0 <= selection_seed <= 999999:
+        raise ValueError("selection_seed must be an integer from 0 to 999999")
     target_duration = _positive_number(script.get("target_duration_seconds"), "target_duration_seconds")
     aspect_ratio = str(script.get("aspect_ratio") or "").strip()
     if aspect_ratio not in {"9:16", "16:9", "1:1", "4:5"}:
@@ -625,7 +628,8 @@ def match_script(config: dict[str, Any], catalog: dict[str, Any], script: dict[s
             })
             timeline_start += shot["duration_seconds"]
             continue
-        chosen = candidates[0]
+        choice_index = selection_seed % len(candidates)
+        chosen = candidates[choice_index]
         asset = chosen["asset"]
         source_start, source_end = chosen["source_range"]
         usage[asset["asset_id"]] += 1
@@ -643,11 +647,14 @@ def match_script(config: dict[str, Any], catalog: dict[str, Any], script: dict[s
             "source_in_seconds": source_start,
             "source_out_seconds": source_end,
             "fit_mode": shot["fit_mode"],
+            "selection_rank": choice_index + 1,
             "match_score": chosen["score"],
             "match_reasons": chosen["match_reasons"],
             "alternates": [
                 {"asset_id": item["asset"]["asset_id"], "path": item["asset"]["path"], "score": item["score"]}
-                for item in candidates[1:4]
+                for item in [
+                    candidate for index, candidate in enumerate(candidates) if index != choice_index
+                ][:3]
             ],
         })
         timeline_start += shot["duration_seconds"]
@@ -662,12 +669,14 @@ def match_script(config: dict[str, Any], catalog: dict[str, Any], script: dict[s
         "catalog_id": catalog_id,
         "script_id": script_id,
         "product_id": product_id,
+        "selection_seed": selection_seed,
         "selections": selections,
     }
     return {
         "catalog_id": catalog_id,
         "script_id": script_id,
         "product_id": product_id,
+        "selection_seed": selection_seed,
         "aspect_ratio": aspect_ratio,
         "target_duration_seconds": target_duration,
         "ready_for_chatcut": ready,

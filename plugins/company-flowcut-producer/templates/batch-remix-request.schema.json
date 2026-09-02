@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://company.invalid/schemas/batch-remix-request.schema.json",
+  "title": "Batch Remix Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["request_version", "request_id", "product_id", "platform", "aspect_ratio", "duration_seconds", "language", "output_count", "required_template_tags", "approved_copy", "chatcut_layout", "preserve_existing_timelines", "timeline_name_prefix", "max_incremental_credits", "export_policy"],
+  "properties": {
+    "request_version": {"const": "1.0"},
+    "request_id": {"type": "string", "minLength": 1},
+    "product_id": {"type": "string", "minLength": 1},
+    "platform": {"type": "string", "minLength": 1},
+    "aspect_ratio": {"enum": ["9:16", "16:9", "1:1", "4:5"]},
+    "duration_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 600},
+    "language": {"type": "string", "minLength": 1},
+    "output_count": {"type": "integer", "minimum": 1, "maximum": 100},
+    "template_id": {"type": ["string", "null"], "minLength": 1},
+    "required_template_tags": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "approved_copy": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text", "fact_refs"],
+        "properties": {
+          "text": {"type": "string", "minLength": 1},
+          "fact_refs": {"type": "array", "items": {"type": "string", "minLength": 1}}
+        }
+      }
+    },
+    "chatcut_layout": {"enum": ["named_timelines", "separate_projects"]},
+    "preserve_existing_timelines": {"const": true},
+    "timeline_name_prefix": {"type": "string", "minLength": 1},
+    "max_incremental_credits": {"type": "number", "minimum": 0},
+    "export_policy": {"enum": ["not_requested", "review_before_export"]}
+  }
+}

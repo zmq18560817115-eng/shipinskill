@@ -24,12 +24,13 @@ codex plugin list
 ```powershell
 $env:COMPANY_VIDEO_PRODUCT_ROOTS = "<部门批准产品资料目录>"
 $env:COMPANY_VIDEO_ASSET_ROOTS = "<部门共享素材目录>"
+$env:COMPANY_VIDEO_TEMPLATE_ROOTS = "<部门批准模板脚本目录>"
 $env:COMPANY_VIDEO_OUTPUT_ROOT = "<部门成片目录>"
 $env:COMPANY_VIDEO_DB_PATH = "$env:LOCALAPPDATA\CompanyVideoWorkbench\tasks.sqlite3"
 $env:COMPANY_VIDEO_WORK_ROOT = "$env:LOCALAPPDATA\CompanyVideoWorkbench\work"
 ```
 
-产品和素材变量只指向 NAS 共享目录，并按只读输入使用；素材和输出目录没有安全默认值，需要部门确定真实路径后配置。SQLite 和工作目录必须位于本机磁盘，不能放到 NAS/映射网络盘，也不能落在产品或素材根内。
+产品、素材和模板变量只指向管理员批准目录，并按只读输入使用；素材、模板和输出目录没有安全默认值，需要部门确定真实路径后配置。SQLite 和工作目录必须位于本机磁盘，不能放到 NAS/映射网络盘，也不能落在产品、素材或模板根内。
 
 ## 4. 初始化和离线验证
 
@@ -39,10 +40,13 @@ python scripts\task_store.py init
 python scripts\validate_workbench.py
 python -m unittest discover -s tests -v
 python scripts\company_context.py preflight
+python scripts\template_service.py list-templates
 python scripts\company_context.py get-product --product-id "<真实产品名>" --max-chars 3000
 ```
 
-成功标准：结构和单元测试通过；产品根可读；SQLite 与工作目录的本机父目录可写且不与 NAS 源目录重叠；产品查询返回精确来源；仓库不存在被禁止的旧依赖或秘密。
+成功标准：结构和单元测试通过；产品根和模板根可读；SQLite 与工作目录的本机父目录可写且不与只读源目录重叠；产品查询返回精确来源；只列出经批准模板；仓库不存在被禁止的旧依赖或秘密。
+
+新增模板时，复制 `templates\remix-template.example.json` 到部门模板根，完成业务审核后再把 `status` 改为 `approved`。不要直接修改插件缓存目录；模板数据无需重新发布插件。
 
 创建真实任务前，先用 `get-product --summary-only` 生成不含正文的来源摘要，并把该文件传给 `task_store.py create --source-context-file`。恢复任务时先 `list/read`；如果数据库路径错误，命令会报错且不会静默创建空库。
 

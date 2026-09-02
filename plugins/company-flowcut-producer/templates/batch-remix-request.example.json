@@ -1,0 +1,22 @@
+{
+  "request_version": "1.0",
+  "request_id": "REMIX-EXAMPLE-001",
+  "product_id": "示例产品",
+  "platform": "抖音",
+  "aspect_ratio": "9:16",
+  "duration_seconds": 15,
+  "language": "zh-CN",
+  "output_count": 6,
+  "template_id": null,
+  "required_template_tags": ["quick-remix", "product"],
+  "approved_copy": {
+    "hook": {"text": "外出也能轻松携带。", "fact_refs": ["便携设计"]},
+    "feature": {"text": "展示经过批准的核心功能。", "fact_refs": ["批准功能"]},
+    "cta": {"text": "在真实使用场景中收尾。", "fact_refs": []}
+  },
+  "chatcut_layout": "named_timelines",
+  "preserve_existing_timelines": true,
+  "timeline_name_prefix": "示例产品-15秒混剪",
+  "max_incremental_credits": 0,
+  "export_policy": "not_requested"
+}

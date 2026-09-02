@@ -115,6 +115,7 @@ class CompanyContextTests(unittest.TestCase):
                 "storage": {
                     "product_sources": {"paths": [str(root)]},
                     "asset_sources": {"paths": []},
+                    "template_sources": {"paths": [str(base / "templates")]},
                     "task_database": {"default_local": str(base / "runtime" / "tasks.sqlite3")},
                     "local_work_root": {"default_local": str(base / "runtime" / "work")},
                     "output_root": {"path": ""},
@@ -124,6 +125,7 @@ class CompanyContextTests(unittest.TestCase):
             self.assertTrue(payload["ok_for_task_creation"])
             self.assertEqual(payload["task_store"]["backend"], "standalone_sqlite")
             self.assertEqual(payload["asset_sources"], [])
+            self.assertEqual(payload["template_sources"][0]["access_policy"], "read_only")
             self.assertEqual(payload["product_sources"][0]["access_policy"], "read_only")
             self.assertEqual(payload["data_boundary"]["runtime_storage"], "local_only")
             self.assertTrue(payload["data_boundary"]["valid"])
@@ -241,7 +243,7 @@ class CompanyContextTests(unittest.TestCase):
 
     def test_config_is_valid_json(self):
         payload = json.loads((PLUGIN_ROOT / "department-config" / "company-video.json").read_text(encoding="utf-8"))
-        self.assertEqual(payload["config_version"], "2.3")
+        self.assertEqual(payload["config_version"], "2.4")
 
 
 if __name__ == "__main__":

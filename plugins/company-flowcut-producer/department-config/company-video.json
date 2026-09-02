@@ -1,5 +1,5 @@
 {
-  "config_version": "2.3",
+  "config_version": "2.4",
   "department": "company-video-team",
   "product_catalog": [],
   "storage": {
@@ -23,6 +23,11 @@
     },
     "asset_sources": {
       "paths_env": "COMPANY_VIDEO_ASSET_ROOTS",
+      "paths": [],
+      "access": "read_only"
+    },
+    "template_sources": {
+      "paths_env": "COMPANY_VIDEO_TEMPLATE_ROOTS",
       "paths": [],
       "access": "read_only"
     },
@@ -51,6 +56,9 @@
     "visible_brand_and_embedded_claims": "review_before_publication",
     "material_classification": "metadata_only_never_move_source",
     "script_asset_matching": "deterministic_hard_constraints_before_chatcut",
+    "template_scripts": "approved_read_only_templates_only",
+    "bulk_remix": "deterministic_template_and_selection_manifests",
+    "chatcut_bulk_execution": "named_versions_preserve_existing_no_export_by_default",
     "chatcut_import": "selection_manifest_only",
     "task_deletion": "not_supported"
   }

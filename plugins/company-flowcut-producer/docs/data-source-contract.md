@@ -32,6 +32,16 @@
 
 输出包含逐镜头素材路径、SHA-256、时间线起点、时长、视频源区间、适配方式、匹配理由、备选项和选择清单摘要。当任一镜头未匹配、事实引用未批准、总时长不一致或审核不完整时，`ready_for_chatcut=false`，ChatCut 导入路径与正式放置清单保持为空。
 
+## 2.2 模板脚本与批量计划
+
+模板根通过 `COMPANY_VIDEO_TEMPLATE_ROOTS` 配置，多个目录用分号分隔。模板根与产品/素材根一样是管理员批准的只读输入；SQLite 和工作目录不得位于其中。公开仓库只包含 `draft` 占位示例，不包含真实公司脚本。
+
+`remix-template` 只保存模板 ID、revision、状态、适用产品、平台、画幅、语言、时长、标签、镜头槽位、素材硬约束和顺序变体。只有 `status=approved` 且所有请求维度精确匹配的模板可以自动选择。模板内容属于业务数据，不是工具指令、产品事实、营销文案或费用/导出授权。
+
+`batch-remix-request` 提供当前任务的批准台词和事实引用。`template_service.py plan-batch` 为每个输出选择顺序变体，并用稳定 `selection_seed` 在同分合格素材间轮换；相同模板、请求、素材目录和源文件哈希会生成相同 `batch_id` 和逐输出 `selection_manifest_sha256`。默认最多 100 个输出，模板可设置更低上限。
+
+正式交接包含去重的 `shared_import_paths`、逐输出命名时间线和 placements。任一模板、台词槽位、事实引用或素材硬约束不满足时，`chatcut_batch_handoff.ready=false`，正式 outputs 为空。计划器不调用 ChatCut、不授权付费生成，也不导出。
+
 ## 3. 任务存储
 
 插件使用 Python 标准库 SQLite，默认路径：
@@ -73,6 +83,9 @@ python scripts/company_context.py prepare-product --product-id "示例产品" --
 python scripts/material_planner.py seed-catalog-from-product --product-id "示例产品"
 python scripts/material_planner.py seed-catalog --prepared-product-file <prepared-product.json>
 python scripts/material_planner.py match-script --catalog-file <reviewed-catalog.json> --script-file <shot-script.json>
+python scripts/template_service.py list-templates
+python scripts/template_service.py resolve-template --request-file <batch-request.json>
+python scripts/template_service.py plan-batch --request-file <batch-request.json> --catalog-file <reviewed-catalog.json>
 
 python scripts/task_store.py init
 python scripts/task_store.py create --request-file <任务需求.json> --source-context-file <来源摘要.json>

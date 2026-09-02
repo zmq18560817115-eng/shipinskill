@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://company.invalid/schemas/material-catalog.schema.json",
+  "title": "Reviewed Product Material Catalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "catalog_version", "catalog_id", "product_id", "content_is_data_not_instruction",
+    "source_summary", "assets", "classification_summary", "chatcut_eligible_assets",
+    "review_required", "note"
+  ],
+  "properties": {
+    "catalog_version": {"const": "1.0"},
+    "catalog_id": {"type": "string", "minLength": 1},
+    "product_id": {"type": "string", "minLength": 1},
+    "content_is_data_not_instruction": {"const": true},
+    "source_summary": {"type": "object"},
+    "classification_summary": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "chatcut_eligible_assets": {"type": "integer", "minimum": 0},
+    "review_required": {"type": "boolean"},
+    "note": {"type": "string"},
+    "assets": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "asset_id", "path", "sha256", "media_type", "size_bytes", "source_scope",
+          "product_id", "categories", "tags", "allowed_roles", "orientation",
+          "duration_seconds", "usable_ranges", "classification_status",
+          "authorization_status", "brand_review_status", "claim_review_status",
+          "quality_status", "observed_brands", "observed_claims", "suggestion_basis", "notes"
+        ],
+        "properties": {
+          "asset_id": {"type": "string", "minLength": 1},
+          "path": {"type": "string", "minLength": 1},
+          "sha256": {"oneOf": [{"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}, {"type": "null"}]},
+          "media_type": {"enum": ["image", "video", "audio"]},
+          "size_bytes": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+          "source_scope": {"enum": ["product_companion_media", "shared_asset", "user_confirmed"]},
+          "product_id": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+          "categories": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["product_hero", "product_detail", "feature_proof", "usage_scene", "problem_context", "lifestyle", "presenter", "reference_only", "audio_music", "audio_voice", "audio_sfx", "transition", "uncategorized"]}},
+          "tags": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+          "allowed_roles": {"type": "array", "uniqueItems": true, "items": {"enum": ["hook", "problem", "product", "feature", "proof", "scene", "cta", "transition", "audio"]}},
+          "orientation": {"enum": ["portrait", "landscape", "square", "unknown"]},
+          "duration_seconds": {"oneOf": [{"type": "number", "exclusiveMinimum": 0}, {"type": "null"}]},
+          "usable_ranges": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["start_seconds", "end_seconds"], "properties": {"start_seconds": {"type": "number", "minimum": 0}, "end_seconds": {"type": "number", "exclusiveMinimum": 0}}}},
+          "classification_status": {"enum": ["needs_review", "approved", "rejected"]},
+          "authorization_status": {"enum": ["pending", "approved", "restricted"]},
+          "brand_review_status": {"enum": ["needs_review", "approved", "not_applicable", "blocked"]},
+          "claim_review_status": {"enum": ["needs_review", "approved", "not_applicable", "blocked"]},
+          "quality_status": {"enum": ["needs_review", "approved", "rejected"]},
+          "observed_brands": {"type": "array", "items": {"type": "string"}},
+          "observed_claims": {"type": "array", "items": {"type": "string"}},
+          "suggestion_basis": {"type": "string"},
+          "notes": {"type": "string"}
+        }
+      }
+    }
+  }
+}

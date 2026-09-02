@@ -1,5 +1,5 @@
 {
-  "config_version": "2.1",
+  "config_version": "2.3",
   "department": "company-video-team",
   "product_catalog": [],
   "storage": {
@@ -46,6 +46,12 @@
     "task_state": "standalone_sqlite",
     "runtime_storage": "local_only",
     "nas_sources": "read_only",
+    "task_reads": "strict_read_only_no_implicit_migration",
+    "product_companion_media": "discover_but_require_task_authorization",
+    "visible_brand_and_embedded_claims": "review_before_publication",
+    "material_classification": "metadata_only_never_move_source",
+    "script_asset_matching": "deterministic_hard_constraints_before_chatcut",
+    "chatcut_import": "selection_manifest_only",
     "task_deletion": "not_supported"
   }
 }

@@ -44,6 +44,10 @@ ASPECT_RATIOS = {"9:16", "16:9", "1:1", "4:5"}
 VOICE_MODES = {"none", "existing", "tts", "original_audio"}
 EDIT_MODES = {"existing_footage", "ai_generated", "hybrid", "remix", "multi_variant"}
 AI_POLICIES = {"none", "confirm_exact"}
+LINK_TYPE_ALIASES = {
+    "chatcut_project": "chatcut_project_id",
+    "chatcut_timeline": "chatcut_timeline_id",
+}
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = PLUGIN_ROOT / "department-config" / "company-video.json"
 CURRENT_SCHEMA_VERSION = 2
@@ -209,6 +213,18 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def connect_read_only(db_path: Path) -> sqlite3.Connection:
+    if not db_path.is_file():
+        raise ValueError(f"task database does not exist: {db_path}; run init only for a new workspace")
+    uri = f"{db_path.resolve().as_uri()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=10.0, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only = ON")
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 10000")
+    return conn
+
+
 @contextmanager
 def db_connection(db_path: Path):
     conn = connect(db_path)
@@ -216,6 +232,38 @@ def db_connection(db_path: Path):
         yield conn
     finally:
         conn.close()
+
+
+@contextmanager
+def read_only_db_connection(db_path: Path):
+    conn = connect_read_only(db_path)
+    try:
+        _validate_read_schema(conn)
+        yield conn
+    finally:
+        conn.close()
+
+
+def _validate_read_schema(conn: sqlite3.Connection) -> None:
+    recorded_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if recorded_version > CURRENT_SCHEMA_VERSION:
+        raise ValueError(
+            f"task database schema {recorded_version} is newer than supported {CURRENT_SCHEMA_VERSION}"
+        )
+    required_tables = {"jobs", "job_events", "job_links", "approvals"}
+    tables = {
+        str(row[0]) for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        )
+    }
+    required_columns = {"parent_job_id", "stage", "directives_json"}
+    columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(jobs)")
+    } if "jobs" in tables else set()
+    if recorded_version < CURRENT_SCHEMA_VERSION or not required_tables.issubset(tables) or not required_columns.issubset(columns):
+        raise ValueError(
+            "task database schema migration required; run init explicitly before read or list"
+        )
 
 
 def init_db(db_path: Path) -> dict[str, Any]:
@@ -408,8 +456,7 @@ def _require_job_id(job_id: str) -> None:
 
 def read_job(db_path: Path, job_id: str) -> dict[str, Any]:
     _require_job_id(job_id)
-    require_existing_db(db_path)
-    with db_connection(db_path) as conn:
+    with read_only_db_connection(db_path) as conn:
         row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
         if row is None:
             raise ValueError("job not found")
@@ -441,14 +488,14 @@ def read_job(db_path: Path, job_id: str) -> dict[str, Any]:
 
 
 def list_jobs(db_path: Path, status: str | None = None, limit: int = 50) -> dict[str, Any]:
-    require_existing_db(db_path)
     if status and status not in STATUSES:
         raise ValueError(f"unsupported status: {status}")
     sql = (
         "SELECT j.job_id, j.parent_job_id, j.status, j.stage, j.request_json, j.revision, "
         "j.created_at, j.updated_at, "
         "(SELECT l.value FROM job_links AS l WHERE l.job_id = j.job_id "
-        "AND l.link_type = 'chatcut_project_id' ORDER BY l.link_id DESC LIMIT 1) AS chatcut_project_id "
+        "AND l.link_type IN ('chatcut_project_id', 'chatcut_project') "
+        "ORDER BY l.link_id DESC LIMIT 1) AS chatcut_project_id "
         "FROM jobs AS j"
     )
     params: list[Any] = []
@@ -457,7 +504,7 @@ def list_jobs(db_path: Path, status: str | None = None, limit: int = 50) -> dict
         params.append(status)
     sql += " ORDER BY updated_at DESC LIMIT ?"
     params.append(max(1, min(limit, 200)))
-    with db_connection(db_path) as conn:
+    with read_only_db_connection(db_path) as conn:
         rows = conn.execute(sql, params).fetchall()
     jobs = []
     for row in rows:
@@ -510,6 +557,7 @@ def add_link(db_path: Path, job_id: str, link_type: str, value: str, metadata_pa
     _require_job_id(job_id)
     if not link_type.strip() or not value.strip():
         raise ValueError("link type and value are required")
+    normalized_link_type = LINK_TYPE_ALIASES.get(link_type.strip(), link_type.strip())
     metadata = read_json_object(metadata_path)
     require_existing_db(db_path)
     with db_connection(db_path) as conn:
@@ -519,11 +567,11 @@ def add_link(db_path: Path, job_id: str, link_type: str, value: str, metadata_pa
                 raise ValueError("job not found")
             inserted = conn.execute(
                 "INSERT OR IGNORE INTO job_links(job_id, link_type, value, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)",
-                (job_id, link_type.strip(), value.strip(), _json(metadata), utc_now()),
+                (job_id, normalized_link_type, value.strip(), _json(metadata), utc_now()),
             )
             if inserted.rowcount == 1:
                 conn.execute("UPDATE jobs SET revision = revision + 1, updated_at = ? WHERE job_id = ?", (utc_now(), job_id))
-                _event(conn, job_id, "link_added", payload={"link_type": link_type.strip(), "value": value.strip()})
+                _event(conn, job_id, "link_added", payload={"link_type": normalized_link_type, "value": value.strip()})
             conn.commit()
         except Exception:
             conn.rollback()

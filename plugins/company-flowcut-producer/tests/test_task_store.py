@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 import sqlite3
@@ -123,7 +124,7 @@ class TaskStoreTests(unittest.TestCase):
             self.assertTrue({"parent_job_id", "stage", "directives_json"}.issubset(columns))
             self.assertEqual(migration[0], task_store.CURRENT_SCHEMA_VERSION)
 
-    def test_legacy_database_is_migrated_before_list(self):
+    def test_legacy_database_requires_explicit_migration_before_list(self):
         with tempfile.TemporaryDirectory() as temp:
             db = Path(temp) / "legacy-list.sqlite3"
             conn = sqlite3.connect(db)
@@ -138,14 +139,44 @@ class TaskStoreTests(unittest.TestCase):
                 conn.commit()
             finally:
                 conn.close()
-            listing = task_store.list_jobs(db)
+            before_hash = hashlib.sha256(db.read_bytes()).hexdigest()
+            before_mtime = db.stat().st_mtime_ns
+            with self.assertRaisesRegex(ValueError, "run init explicitly"):
+                task_store.list_jobs(db)
             conn = sqlite3.connect(db)
             try:
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
             finally:
                 conn.close()
-            self.assertEqual(listing["jobs"], [])
-            self.assertTrue({"parent_job_id", "stage", "directives_json"}.issubset(columns))
+            self.assertFalse({"parent_job_id", "stage", "directives_json"}.issubset(columns))
+            self.assertEqual(hashlib.sha256(db.read_bytes()).hexdigest(), before_hash)
+            self.assertEqual(db.stat().st_mtime_ns, before_mtime)
+
+    def test_read_and_list_do_not_modify_database_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "tasks.sqlite3"
+            created = task_store.create_job(
+                db, PLUGIN_ROOT / "templates" / "video-job.example.json", write_source_context(root)
+            )
+            before_hash = hashlib.sha256(db.read_bytes()).hexdigest()
+            before_mtime = db.stat().st_mtime_ns
+            task_store.read_job(db, created["job_id"])
+            task_store.list_jobs(db)
+            self.assertEqual(hashlib.sha256(db.read_bytes()).hexdigest(), before_hash)
+            self.assertEqual(db.stat().st_mtime_ns, before_mtime)
+
+    def test_chatcut_link_aliases_are_normalized_and_discoverable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "tasks.sqlite3"
+            created = task_store.create_job(
+                db, PLUGIN_ROOT / "templates" / "video-job.example.json", write_source_context(root)
+            )
+            linked = task_store.add_link(db, created["job_id"], "chatcut_project", "project-alias")
+            listing = task_store.list_jobs(db)
+            self.assertEqual(linked["links"][0]["link_type"], "chatcut_project_id")
+            self.assertEqual(listing["jobs"][0]["chatcut_project_id"], "project-alias")
 
     def test_future_database_schema_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:

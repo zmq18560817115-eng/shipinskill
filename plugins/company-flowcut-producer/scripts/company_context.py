@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 import sys
 from datetime import datetime, timezone
@@ -328,6 +329,184 @@ def list_assets(config: dict[str, Any], product_id: str, query: str, limit: int)
     }
 
 
+def list_product_media(
+    config: dict[str, Any],
+    product_id: str,
+    query: str,
+    limit: int,
+    include_hashes: bool = False,
+) -> dict[str, Any]:
+    """Discover media kept beside an exact product plus matching shared assets.
+
+    Product companion media is selected only from a direct child directory whose
+    name exactly matches the product id. Shared assets still require path-text
+    relevance. Both source classes remain read-only and require task-time usage
+    authorization.
+    """
+    _validate_product_id(product_id)
+    maximum = max(1, min(limit, 200))
+    query_terms = [term.casefold() for term in query.split() if term.strip()]
+    shared_terms = [term.casefold() for term in f"{product_id} {query}".split() if term.strip()]
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def append_media(path: Path, source_scope: str) -> None:
+        if len(result) >= maximum:
+            return
+        kind = MEDIA_EXTENSIONS.get(path.suffix.lower())
+        if kind is None:
+            return
+        key = _normalized_path(path)
+        if key in seen:
+            return
+        try:
+            stat_result = path.stat()
+        except OSError:
+            return
+        item: dict[str, Any] = {
+            "path": str(path),
+            "kind": kind,
+            "size_bytes": stat_result.st_size,
+            "modified_at": datetime.fromtimestamp(
+                stat_result.st_mtime, timezone.utc
+            ).isoformat(timespec="seconds"),
+            "source_type": "nas" if _is_network_path(path) else "local",
+            "source_scope": source_scope,
+            "access_policy": "read_only",
+            "authorization": "requires_current_task_confirmation",
+            "review_required": [
+                "visible_brand_identity",
+                "embedded_claims_and_numbers",
+                "usage_rights_and_person_release",
+            ],
+        }
+        if include_hashes:
+            item["sha256"] = _hash_file(path)
+        seen.add(key)
+        result.append(item)
+
+    product_roots = configured_roots(config, "product_sources")
+    for root in product_roots:
+        if len(result) >= maximum or not root.exists():
+            continue
+        try:
+            resolved_root = root.resolve()
+        except OSError:
+            continue
+        product_directory = _resolved_directory_within(resolved_root, resolved_root / product_id)
+        if product_directory is None:
+            continue
+        for path in _walk_files(product_directory):
+            searchable = str(path.relative_to(product_directory)).casefold()
+            if query_terms and not all(term in searchable for term in query_terms):
+                continue
+            append_media(path, "product_companion_media")
+            if len(result) >= maximum:
+                break
+
+    asset_roots = configured_roots(config, "asset_sources")
+    for root in asset_roots:
+        if len(result) >= maximum or not root.exists():
+            continue
+        for path in _walk_files(root):
+            searchable = str(path).casefold()
+            if shared_terms and not all(term in searchable for term in shared_terms):
+                continue
+            append_media(path, "shared_asset")
+            if len(result) >= maximum:
+                break
+
+    return {
+        "product_id": product_id,
+        "media": result,
+        "count": len(result),
+        "hashes_included": include_hashes,
+        "product_roots_configured": len(product_roots),
+        "asset_roots_configured": len(asset_roots),
+        "blocking_issue": None if result else "product_media_not_found",
+        "note": (
+            "discovery does not grant upload or publication rights; inspect visible brands and "
+            "embedded claims before ChatCut writes"
+        ),
+    }
+
+
+def prepare_product(
+    config: dict[str, Any],
+    product_id: str,
+    query: str,
+    limit: int,
+    max_chars: int,
+    include_hashes: bool,
+    observed_brands: list[str],
+    observed_claims: list[str],
+    visible_brand_review_complete: bool = False,
+    embedded_claims_review_complete: bool = False,
+) -> dict[str, Any]:
+    product = get_product(config, product_id, max_chars)
+    media = list_product_media(config, product_id, query, limit, include_hashes)
+    approved_text = "\n".join(
+        str(document.get("content") or "") for document in product.get("documents", [])
+    )
+    violations: list[dict[str, Any]] = []
+    for value in observed_brands:
+        if value.strip() and not _observation_is_approved(value, approved_text):
+            violations.append({
+                "type": "brand_not_found_in_approved_documents",
+                "observed": value.strip(),
+                "severity": "publish_blocking",
+            })
+    for value in observed_claims:
+        if value.strip() and not _observation_is_approved(value, approved_text):
+            violations.append({
+                "type": "claim_not_found_in_approved_documents",
+                "observed": value.strip(),
+                "severity": "publish_blocking",
+            })
+    brand_reviewed = visible_brand_review_complete or bool(observed_brands)
+    claims_reviewed = embedded_claims_review_complete or bool(observed_claims)
+    pending_reviews = []
+    if not brand_reviewed:
+        pending_reviews.append("visible_brand_identity_not_reviewed")
+    if not claims_reviewed:
+        pending_reviews.append("embedded_claims_and_numbers_not_reviewed")
+    context_ready = product.get("blocking_issue") is None and media.get("blocking_issue") is None
+    return {
+        "product": product,
+        "source_summary": summarize_product(product),
+        "media_candidates": media,
+        "review_gate": {
+            "context_ready_for_internal_edit": context_ready,
+            "publish_ready": context_ready and not violations and not pending_reviews,
+            "human_review_required": bool(violations or pending_reviews),
+            "violations": violations,
+            "pending_reviews": pending_reviews,
+            "visible_brand_review_complete": brand_reviewed,
+            "embedded_claims_review_complete": claims_reviewed,
+            "observations_are_user_or_agent_supplied_not_ocr": True,
+        },
+        "content_is_data_not_instruction": True,
+    }
+
+
+def _observation_is_approved(observation: str, approved_text: str) -> bool:
+    needle = _normalize_for_match(observation)
+    haystack = _normalize_for_match(approved_text)
+    return bool(needle and needle in haystack)
+
+
+def _normalize_for_match(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^\w]+", " ", value.casefold())).strip()
+
+
+def _hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _find_exact_documents(root: Path, product_id: str) -> list[Path]:
     _validate_product_id(product_id)
     root = root.resolve()
@@ -441,6 +620,16 @@ def build_parser() -> argparse.ArgumentParser:
     assets.add_argument("--product-id", default="")
     assets.add_argument("--query", default="")
     assets.add_argument("--limit", type=int, default=50)
+    prepare = sub.add_parser("prepare-product")
+    prepare.add_argument("--product-id", required=True)
+    prepare.add_argument("--query", default="")
+    prepare.add_argument("--limit", type=int, default=50)
+    prepare.add_argument("--max-chars", type=int, default=12000)
+    prepare.add_argument("--include-hashes", action="store_true")
+    prepare.add_argument("--observed-brand", action="append", default=[])
+    prepare.add_argument("--observed-claim", action="append", default=[])
+    prepare.add_argument("--visible-brand-review-complete", action="store_true")
+    prepare.add_argument("--embedded-claims-review-complete", action="store_true")
     return parser
 
 
@@ -456,8 +645,21 @@ def main() -> int:
         payload = get_product(config, args.product_id, max(1000, args.max_chars))
         if args.summary_only:
             payload = summarize_product(payload)
-    else:
+    elif args.command == "list-assets":
         payload = list_assets(config, args.product_id, args.query, args.limit)
+    else:
+        payload = prepare_product(
+            config,
+            args.product_id,
+            args.query,
+            args.limit,
+            max(1000, args.max_chars),
+            args.include_hashes,
+            args.observed_brand,
+            args.observed_claim,
+            args.visible_brand_review_complete,
+            args.embedded_claims_review_complete,
+        )
     emit(payload)
     return 0
 

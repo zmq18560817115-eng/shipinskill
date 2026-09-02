@@ -20,7 +20,12 @@ REQUIRED = [
     PLUGIN_ROOT / "templates" / "directive.example.json",
     PLUGIN_ROOT / "templates" / "test-cases" / "two-day-video-flow.json",
     PLUGIN_ROOT / "scripts" / "company_context.py",
+    PLUGIN_ROOT / "scripts" / "material_planner.py",
     PLUGIN_ROOT / "scripts" / "task_store.py",
+    PLUGIN_ROOT / "templates" / "material-catalog.schema.json",
+    PLUGIN_ROOT / "templates" / "material-catalog.example.json",
+    PLUGIN_ROOT / "templates" / "shot-script.schema.json",
+    PLUGIN_ROOT / "templates" / "shot-script.example.json",
     PLUGIN_ROOT / "docs" / "system-architecture.md",
     PLUGIN_ROOT / "docs" / "data-source-contract.md",
     PLUGIN_ROOT / "docs" / "local-install.md",
@@ -78,6 +83,12 @@ def main() -> int:
             errors.append("runtime_storage policy must be local_only")
         if policies.get("nas_sources") != "read_only":
             errors.append("nas_sources policy must be read_only")
+        if policies.get("material_classification") != "metadata_only_never_move_source":
+            errors.append("material classification must never move source files")
+        if policies.get("script_asset_matching") != "deterministic_hard_constraints_before_chatcut":
+            errors.append("script asset matching must use deterministic hard constraints")
+        if policies.get("chatcut_import") != "selection_manifest_only":
+            errors.append("ChatCut import must be limited to the selection manifest")
     cases_path = PLUGIN_ROOT / "templates" / "test-cases" / "two-day-video-flow.json"
     if cases_path.is_file():
         payload = json.loads(cases_path.read_text(encoding="utf-8"))

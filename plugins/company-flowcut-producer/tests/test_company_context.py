@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import tempfile
 import unittest
@@ -50,6 +51,60 @@ class CompanyContextTests(unittest.TestCase):
             config = {"storage": {"product_sources": {"paths": [temp]}}}
             payload = context.get_product(config, "不存在", 12000)
             self.assertEqual(payload["blocking_issue"], "product_context_incomplete")
+
+    def test_prepare_product_discovers_companion_media_and_blocks_unapproved_observations(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "演示恒温杯.md").write_text(
+                "# 示例品牌演示恒温杯\n便携可充电；USB-C 充电；多档温控。", encoding="utf-8"
+            )
+            media_root = root / "演示恒温杯" / "listing"
+            media_root.mkdir(parents=True)
+            product_image = media_root / "主图.jpg"
+            product_image.write_bytes(b"approved-product-image")
+            config = {
+                "storage": {
+                    "product_sources": {"paths": [str(root)]},
+                    "asset_sources": {"paths": []},
+                }
+            }
+            payload = context.prepare_product(
+                config,
+                "演示恒温杯",
+                "",
+                20,
+                12000,
+                True,
+                ["外部演示品牌"],
+                ["三分钟完成加热"],
+            )
+            self.assertTrue(payload["review_gate"]["context_ready_for_internal_edit"])
+            self.assertFalse(payload["review_gate"]["publish_ready"])
+            self.assertEqual(len(payload["review_gate"]["violations"]), 2)
+            self.assertEqual(payload["media_candidates"]["count"], 1)
+            self.assertEqual(
+                payload["media_candidates"]["media"][0]["sha256"],
+                hashlib.sha256(b"approved-product-image").hexdigest(),
+            )
+            self.assertEqual(
+                payload["media_candidates"]["media"][0]["source_scope"],
+                "product_companion_media",
+            )
+
+            reviewed_empty = context.prepare_product(
+                config,
+                "演示恒温杯",
+                "",
+                20,
+                12000,
+                False,
+                [],
+                [],
+                True,
+                True,
+            )
+            self.assertTrue(reviewed_empty["review_gate"]["publish_ready"])
+            self.assertEqual(reviewed_empty["review_gate"]["pending_reviews"], [])
 
     def test_preflight_is_standalone_and_reports_unconfigured_assets(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -186,7 +241,7 @@ class CompanyContextTests(unittest.TestCase):
 
     def test_config_is_valid_json(self):
         payload = json.loads((PLUGIN_ROOT / "department-config" / "company-video.json").read_text(encoding="utf-8"))
-        self.assertEqual(payload["config_version"], "2.1")
+        self.assertEqual(payload["config_version"], "2.3")
 
 
 if __name__ == "__main__":

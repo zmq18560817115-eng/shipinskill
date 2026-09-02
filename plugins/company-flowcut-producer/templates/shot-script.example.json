@@ -1,0 +1,58 @@
+{
+  "script_version": "1.0",
+  "script_id": "SCRIPT-EXAMPLE-15S",
+  "product_id": "示例产品",
+  "aspect_ratio": "9:16",
+  "target_duration_seconds": 15,
+  "max_asset_uses": 1,
+  "shots": [
+    {
+      "shot_id": "S01",
+      "order": 1,
+      "line": "外出也能轻松携带。",
+      "role": "hook",
+      "duration_seconds": 5,
+      "required_categories": ["product_hero"],
+      "required_tags": ["product"],
+      "preferred_tags": ["portable"],
+      "allowed_media_types": ["image", "video"],
+      "required_orientation": "any",
+      "preferred_orientation": "portrait",
+      "fit_mode": "contain",
+      "allow_generic": false,
+      "fact_refs": ["便携"]
+    },
+    {
+      "shot_id": "S02",
+      "order": 2,
+      "line": "展示经过批准的核心功能。",
+      "role": "feature",
+      "duration_seconds": 5,
+      "required_categories": ["feature_proof"],
+      "required_tags": ["approved-feature"],
+      "preferred_tags": [],
+      "allowed_media_types": ["image", "video"],
+      "required_orientation": "any",
+      "preferred_orientation": "portrait",
+      "fit_mode": "cover_blur_background",
+      "allow_generic": false,
+      "fact_refs": ["批准功能"]
+    },
+    {
+      "shot_id": "S03",
+      "order": 3,
+      "line": "在真实使用场景中收尾。",
+      "role": "cta",
+      "duration_seconds": 5,
+      "required_categories": ["usage_scene"],
+      "required_tags": ["approved-scene"],
+      "preferred_tags": ["lifestyle"],
+      "allowed_media_types": ["image", "video"],
+      "required_orientation": "any",
+      "preferred_orientation": "portrait",
+      "fit_mode": "cover",
+      "allow_generic": false,
+      "fact_refs": []
+    }
+  ]
+}

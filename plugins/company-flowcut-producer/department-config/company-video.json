@@ -1,0 +1,40 @@
+{
+  "config_version": "2.0",
+  "department": "company-video-team",
+  "product_catalog": [],
+  "storage": {
+    "task_database": {
+      "path_env": "COMPANY_VIDEO_DB_PATH",
+      "default_local": "%LOCALAPPDATA%\\CompanyVideoWorkbench\\tasks.sqlite3",
+      "backend": "standalone_sqlite",
+      "network_share_policy": "prohibited"
+    },
+    "product_sources": {
+      "paths_env": "COMPANY_VIDEO_PRODUCT_ROOTS",
+      "paths": []
+    },
+    "asset_sources": {
+      "paths_env": "COMPANY_VIDEO_ASSET_ROOTS",
+      "paths": []
+    },
+    "output_root": {
+      "path_env": "COMPANY_VIDEO_OUTPUT_ROOT",
+      "path": ""
+    }
+  },
+  "defaults": {
+    "platform": "TikTok/Reels/Shorts",
+    "aspect_ratio": "9:16",
+    "language": "en",
+    "preserve_existing_timelines": true,
+    "export_after_review_only": true
+  },
+  "policies": {
+    "product_facts": "approved_files_only",
+    "paid_generation": "confirm_each_exact_operation",
+    "destructive_edits": "confirm_each_operation",
+    "competitor_material": "structure_and_style_reference_only",
+    "task_state": "standalone_sqlite",
+    "task_deletion": "not_supported"
+  }
+}

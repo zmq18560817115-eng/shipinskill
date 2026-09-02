@@ -1,0 +1,7 @@
+{
+  "variants": ["A", "B", "C"],
+  "max_incremental_credits": 0,
+  "allow_paid_generation": false,
+  "preserve_existing_timelines": true,
+  "export_policy": "not_requested"
+}

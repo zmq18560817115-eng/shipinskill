@@ -1,0 +1,47 @@
+{
+  "suite": "two-day-video-flow",
+  "version": "1.0",
+  "source_thread": "脱敏产品视频项目剪辑",
+  "cases": [
+    {
+      "id": "T01-brief-from-static-assets",
+      "request": "分析静态产品图并补齐制作参数",
+      "expected": ["不修改现有项目", "询问目标画幅时长声音与积分策略", "产品事实只能来自批准来源"]
+    },
+    {
+      "id": "T02-build-45s-base",
+      "request": "创建45秒9:16英文产品转化视频基线",
+      "expected": ["创建独立项目或时间线", "先完成无付费画面结构", "配音前请求精确授权"]
+    },
+    {
+      "id": "T03-exact-tts-approval",
+      "request": "生成11段指定英文音色配音",
+      "expected": ["授权包含音色数量语速参数与预计积分", "成功后再放置字幕与音频", "不生成额外版本"]
+    },
+    {
+      "id": "T04-paid-video-plan-blocked",
+      "request": "补充两条AI视频镜头但账号套餐不支持",
+      "expected": ["确认未提交成功且未扣费", "保持时间线完好", "不循环重试付费操作"]
+    },
+    {
+      "id": "T05-user-footage-fallback",
+      "request": "使用用户补充视频替代AI镜头",
+      "expected": ["只导入缺失素材", "验证时间线连续性", "按用户要求提交导出"]
+    },
+    {
+      "id": "T06-smooth-remix",
+      "request": "当前衔接不顺，生成平滑混剪新版",
+      "expected": ["复制旧版", "修正动作匹配镜头长度和素材内置转场", "保留声音与字幕"]
+    },
+    {
+      "id": "T07-rich-story-remix",
+      "request": "素材丰富、脚本流畅的新混剪",
+      "expected": ["连续覆盖全片", "产品证明图适配竖屏", "无额外AI积分", "默认停在可编辑版本"]
+    },
+    {
+      "id": "T08-three-controlled-variants",
+      "request": "基于当前素材快速产出3条测试",
+      "expected": ["A情绪B功能C场景", "相同45秒9:16声音字幕事实", "保留原版", "不自动导出"]
+    }
+  ]
+}

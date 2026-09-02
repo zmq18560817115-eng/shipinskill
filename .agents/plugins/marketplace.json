@@ -1,0 +1,20 @@
+{
+  "name": "company-video-workbench",
+  "interface": {
+    "displayName": "Company Video Workbench"
+  },
+  "plugins": [
+    {
+      "name": "company-flowcut-producer",
+      "source": {
+        "source": "local",
+        "path": "./plugins/company-flowcut-producer"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

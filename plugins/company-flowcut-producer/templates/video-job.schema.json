@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://company.invalid/schemas/video-job.schema.json",
+  "title": "Company Video Job Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "product_id", "goal", "platform", "aspect_ratio", "duration_seconds",
+    "language", "edit_mode", "ai_generation_policy", "output_count"
+  ],
+  "properties": {
+    "product_id": {"type": "string", "minLength": 1},
+    "goal": {"type": "string", "minLength": 1},
+    "platform": {"type": "string", "minLength": 1},
+    "aspect_ratio": {"enum": ["9:16", "16:9", "1:1", "4:5"]},
+    "duration_seconds": {"type": "integer", "minimum": 1, "maximum": 600},
+    "language": {"type": "string", "minLength": 2},
+    "voice_mode": {"enum": ["none", "existing", "tts", "original_audio"]},
+    "edit_mode": {"enum": ["existing_footage", "ai_generated", "hybrid", "remix", "multi_variant"]},
+    "ai_generation_policy": {"enum": ["none", "confirm_exact"]},
+    "output_count": {"type": "integer", "minimum": 1, "maximum": 20},
+    "source_media": {"type": "array", "items": {"type": "string"}},
+    "must_keep": {"type": "array", "items": {"type": "string"}},
+    "must_avoid": {"type": "array", "items": {"type": "string"}},
+    "notes": {"type": "string"}
+  }
+}

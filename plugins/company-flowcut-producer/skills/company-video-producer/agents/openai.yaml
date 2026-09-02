@@ -1,0 +1,7 @@
+interface:
+  display_name: "Company Video Producer"
+  short_description: "公司产品事实、共享素材与 ChatCut 视频生产编排"
+  brand_color: "#2563EB"
+  default_prompt: "使用 $company-video-producer 读取公司产品资料并完成一条可恢复、可质检的视频任务。"
+policy:
+  allow_implicit_invocation: true

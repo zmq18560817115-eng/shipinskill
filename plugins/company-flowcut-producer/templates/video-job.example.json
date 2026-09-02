@@ -1,0 +1,16 @@
+{
+  "product_id": "示例产品",
+  "goal": "产品转化广告",
+  "platform": "TikTok/Reels/Shorts",
+  "aspect_ratio": "9:16",
+  "duration_seconds": 45,
+  "language": "en",
+  "voice_mode": "existing",
+  "edit_mode": "multi_variant",
+  "ai_generation_policy": "confirm_exact",
+  "output_count": 3,
+  "source_media": [],
+  "must_keep": ["批准的产品身份", "英文字幕与现有配音"],
+  "must_avoid": ["未经来源支持的量化声明", "覆盖旧时间线"],
+  "notes": "A情绪钩子、B功能演示、C出行场景；先生成可编辑版本，不自动导出。"
+}

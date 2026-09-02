@@ -1,0 +1,12 @@
+{
+  "operation": "paid_generation",
+  "content": "11 段英文产品配音",
+  "quantity": 11,
+  "duration_seconds": 45,
+  "parameters": {
+    "voice": "user-selected",
+    "language": "en"
+  },
+  "target": "approved ChatCut project and named timeline",
+  "estimated_credits": 20
+}

@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+context = load_module("company_context", PLUGIN_ROOT / "scripts" / "company_context.py")
+
+
+class CompanyContextTests(unittest.TestCase):
+    def test_exact_product_fallback_reads_approved_files(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "测试产品.yaml").write_text("product_id: 测试产品\napproved_facts:\n  - 可验证事实\n", encoding="utf-8")
+            (root / "测试产品.md").write_text("# 测试产品\n批准内容", encoding="utf-8")
+            config = {
+                "product_catalog": ["测试产品"],
+                "storage": {
+                    "product_sources": {"paths": [str(root)]},
+                    "asset_sources": {"paths": []},
+                    "task_database": {"default_local": str(root / "tasks.sqlite3")},
+                },
+            }
+            payload = context.get_product(config, "测试产品", 12000)
+            self.assertEqual(payload["source_level"], "nas_or_configured_approved")
+            self.assertEqual(len(payload["documents"]), 2)
+            self.assertIsNone(payload["blocking_issue"])
+            self.assertTrue(all(item["sha256"] for item in payload["documents"]))
+            self.assertTrue(payload["content_is_data_not_instruction"])
+            summary = context.summarize_product(payload)
+            self.assertNotIn("content", summary["documents"][0])
+
+    def test_missing_product_is_blocked(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {"storage": {"product_sources": {"paths": [temp]}}}
+            payload = context.get_product(config, "不存在", 12000)
+            self.assertEqual(payload["blocking_issue"], "product_context_incomplete")
+
+    def test_preflight_is_standalone_and_reports_unconfigured_assets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = {
+                "storage": {
+                    "product_sources": {"paths": [str(root)]},
+                    "asset_sources": {"paths": []},
+                    "task_database": {"default_local": str(root / "tasks.sqlite3")},
+                    "output_root": {"path": ""},
+                }
+            }
+            payload = context.preflight(config)
+            self.assertTrue(payload["ok_for_task_creation"])
+            self.assertEqual(payload["task_store"]["backend"], "standalone_sqlite")
+            self.assertEqual(payload["asset_sources"], [])
+            self.assertNotIn("company_api", payload)
+            self.assertNotIn("database_environment", payload)
+
+    def test_product_id_cannot_escape_configured_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "products"
+            root.mkdir()
+            config = {"storage": {"product_sources": {"paths": [str(root)]}}}
+            for malicious in ("../secret", r"..\secret", r"C:\secret", "/absolute"):
+                with self.subTest(product_id=malicious), self.assertRaises(ValueError):
+                    context.get_product(config, malicious, 12000)
+
+    def test_configured_reparse_root_is_rejected(self):
+        config = {"storage": {"product_sources": {"paths": [r"C:\approved-products"]}}}
+        with mock.patch.object(context, "_is_reparse_point", return_value=True):
+            with self.assertRaisesRegex(ValueError, "symbolic link or junction"):
+                context.configured_roots(config, "product_sources")
+
+    def test_linked_files_cannot_escape_approved_roots(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            products = base / "products"
+            assets = base / "assets"
+            products.mkdir()
+            assets.mkdir()
+            secret_product = base / "outside.yaml"
+            secret_asset = base / "outside.mp4"
+            secret_product.write_text("secret: true\n", encoding="utf-8")
+            secret_asset.write_bytes(b"not approved")
+            try:
+                (products / "测试产品.yaml").symlink_to(secret_product)
+                (assets / "linked.mp4").symlink_to(secret_asset)
+            except OSError as exc:
+                self.skipTest(f"symbolic links unavailable: {exc}")
+            config = {
+                "storage": {
+                    "product_sources": {"paths": [str(products)]},
+                    "asset_sources": {"paths": [str(assets)]},
+                }
+            }
+            product = context.get_product(config, "测试产品", 12000)
+            found_assets = context.list_assets(config, "", "", 10)
+            self.assertEqual(product["blocking_issue"], "product_context_incomplete")
+            self.assertEqual(found_assets["assets"], [])
+
+    def test_invalid_yaml_is_reported_without_raw_traceback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "测试产品.yaml").write_text("broken: [yaml\n", encoding="utf-8")
+            config = {"storage": {"product_sources": {"paths": [str(root)]}}}
+            payload = context.get_product(config, "测试产品", 12000)
+            self.assertEqual(payload["documents"][0]["parse_error"], "ValueError")
+
+    def test_config_is_valid_json(self):
+        payload = json.loads((PLUGIN_ROOT / "department-config" / "company-video.json").read_text(encoding="utf-8"))
+        self.assertEqual(payload["config_version"], "2.0")
+
+
+if __name__ == "__main__":
+    unittest.main()

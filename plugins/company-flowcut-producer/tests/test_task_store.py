@@ -7,6 +7,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -35,6 +36,18 @@ def write_source_context(root: Path, product_id: str = "示例产品") -> Path:
 
 
 class TaskStoreTests(unittest.TestCase):
+    def test_published_approval_and_capability_examples_match_runtime_contracts(self):
+        approval = json.loads(
+            (PLUGIN_ROOT / "templates" / "approval-scope.example.json").read_text(encoding="utf-8")
+        )
+        capability = json.loads(
+            (PLUGIN_ROOT / "templates" / "capability-check.example.json").read_text(encoding="utf-8")
+        )
+        normalized_approval = task_store.validate_approval_scope(approval, "paid_generation", "approved")
+        normalized_capability = task_store.validate_capability_check(capability)
+        self.assertEqual(normalized_approval["cost_estimate"]["status"], "unavailable")
+        self.assertEqual(normalized_capability["status"], "not_included")
+
     def test_create_transition_link_approval_cost_directive_and_stage(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -42,11 +55,29 @@ class TaskStoreTests(unittest.TestCase):
             source = write_source_context(root)
             scope = root / "scope.json"
             scope.write_text(json.dumps({
+                "approval_scope_version": "2.0",
                 "operation": "paid_generation",
                 "content": "one test voice segment",
                 "quantity": 1,
                 "target": "test timeline",
-                "estimated_credits": 20,
+                "capability_requirement": {
+                    "provider": "chatcut",
+                    "feature_key": "agent_tool.video_gen_seedance2",
+                    "project_id": "project-test",
+                    "requested_parameters": {"model": "test"},
+                },
+                "cost_estimate": {
+                    "status": "known",
+                    "amount": 20,
+                    "currency": "CREDITS",
+                    "source": "test-provider",
+                },
+                "billing_acceptance": {
+                    "mode": "estimated_amount",
+                    "accepted": True,
+                    "scope": "this_operation_only",
+                    "maximum_amount": 20,
+                },
             }), encoding="utf-8")
             directive = root / "directive.json"
             directive.write_text(json.dumps({
@@ -123,6 +154,41 @@ class TaskStoreTests(unittest.TestCase):
             self.assertEqual(result["migrations_applied"], 3)
             self.assertTrue({"parent_job_id", "stage", "directives_json"}.issubset(columns))
             self.assertEqual(migration[0], task_store.CURRENT_SCHEMA_VERSION)
+            self.assertIn("capability_checks", result["tables"])
+
+    def test_v2_non_finite_approval_is_migrated_to_review_required_null_cost(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "v2.sqlite3"
+            created = task_store.create_job(
+                db, PLUGIN_ROOT / "templates" / "video-job.example.json", write_source_context(root)
+            )
+            conn = sqlite3.connect(db)
+            try:
+                conn.execute("DROP TABLE capability_checks")
+                conn.execute("DELETE FROM schema_migrations WHERE version = 3")
+                conn.execute("PRAGMA user_version = 2")
+                conn.execute(
+                    "INSERT INTO approvals(job_id, operation, decision, scope_json, actor, decided_at) "
+                    "VALUES (?, 'paid_generation', 'approved', ?, 'legacy-user', ?)",
+                    (
+                        created["job_id"],
+                        '{"operation":"paid_generation","content":"legacy clip","quantity":1,'
+                        '"target":"legacy timeline","estimated_credits":NaN}',
+                        task_store.utc_now(),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            migrated = task_store.init_db(db)
+            found = task_store.read_job(db, created["job_id"])
+            scope = found["approvals"][0]["scope"]
+            self.assertEqual(migrated["approval_scopes_normalized"], 1)
+            self.assertEqual(scope["cost_estimate"]["status"], "unavailable")
+            self.assertIsNone(scope["cost_estimate"]["amount"])
+            self.assertFalse(scope["billing_acceptance"]["accepted"])
+            self.assertEqual(scope["migration_review_required"], "renew_exact_approval")
 
     def test_legacy_database_requires_explicit_migration_before_list(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -257,6 +323,249 @@ class TaskStoreTests(unittest.TestCase):
             self.assertEqual(adopted["status"], "awaiting_human")
             self.assertEqual(adopted["stage"], "editing")
             self.assertEqual(derived["parent_job_id"], adopted["job_id"])
+
+    def test_unknown_estimate_requires_explicit_actual_charge_acceptance(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "tasks.sqlite3"
+            created = task_store.create_job(
+                db, PLUGIN_ROOT / "templates" / "video-job.example.json", write_source_context(root)
+            )
+            scope = json.loads(
+                (PLUGIN_ROOT / "templates" / "approval-scope.example.json").read_text(encoding="utf-8")
+            )
+            scope_path = root / "unknown-cost.json"
+            scope_path.write_text(json.dumps(scope, ensure_ascii=False), encoding="utf-8")
+            approved = task_store.record_approval(
+                db, created["job_id"], "paid_generation", "approved", scope_path, "tester"
+            )
+            stored_scope = approved["approvals"][0]["scope"]
+            self.assertEqual(stored_scope["cost_estimate"]["status"], "unavailable")
+            self.assertIsNone(stored_scope["cost_estimate"]["amount"])
+            self.assertEqual(stored_scope["billing_acceptance"]["mode"], "actual_charge")
+            self.assertTrue(stored_scope["billing_acceptance"]["acknowledged_estimate_unavailable"])
+
+            scope["cost_estimate"]["amount"] = 0
+            scope_path.write_text(json.dumps(scope, ensure_ascii=False), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "must be null"):
+                task_store.record_approval(
+                    db, created["job_id"], "paid_generation", "approved", scope_path, "tester"
+                )
+            scope["cost_estimate"]["amount"] = None
+            scope["billing_acceptance"]["acknowledged_estimate_unavailable"] = False
+            scope_path.write_text(json.dumps(scope, ensure_ascii=False), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "acknowledged_estimate_unavailable"):
+                task_store.record_approval(
+                    db, created["job_id"], "paid_generation", "approved", scope_path, "tester"
+                )
+
+    def test_non_finite_estimate_is_rejected_as_invalid_json(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "tasks.sqlite3"
+            created = task_store.create_job(
+                db, PLUGIN_ROOT / "templates" / "video-job.example.json", write_source_context(root)
+            )
+            scope_path = root / "nan-cost.json"
+            scope_path.write_text(json.dumps({
+                "operation": "paid_generation",
+                "content": "test",
+                "quantity": 1,
+                "target": "test timeline",
+                "estimated_credits": float("nan"),
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid JSON constant"):
+                task_store.record_approval(
+                    db, created["job_id"], "paid_generation", "approved", scope_path, "tester"
+                )
+
+    def test_paid_operation_preflight_is_read_only_and_can_be_ready(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "tasks.sqlite3"
+            created = task_store.create_job(
+                db, PLUGIN_ROOT / "templates" / "video-job.example.json", write_source_context(root)
+            )
+            check_path = root / "capability.json"
+            check_path.write_text(json.dumps({
+                "capability_check_version": "1.0",
+                "provider": "chatcut",
+                "operation": "paid_generation",
+                "feature_key": "agent_tool.video_gen_seedance2",
+                "project_id": "approved-project-id",
+                "requested_parameters": {
+                    "model": "Seedance 2.5",
+                    "duration_seconds": 5,
+                    "aspect_ratio": "9:16",
+                    "resolution": "720p",
+                },
+                "status": "available",
+                "source": "provider_preflight",
+                "checked_at": task_store.utc_now(),
+                "plan": {"name": "test-plan"},
+                "evidence": {"feature_included": True},
+            }), encoding="utf-8")
+            checked = task_store.record_capability_check(db, created["job_id"], check_path)
+            self.assertEqual(checked["capability_checks"][0]["status"], "available")
+
+            scope_path = root / "approval.json"
+            scope = json.loads(
+                (PLUGIN_ROOT / "templates" / "approval-scope.example.json").read_text(encoding="utf-8")
+            )
+            scope_path.write_text(json.dumps(scope, ensure_ascii=False), encoding="utf-8")
+            task_store.record_approval(
+                db, created["job_id"], "paid_generation", "approved", scope_path, "tester"
+            )
+            before_hash = hashlib.sha256(db.read_bytes()).hexdigest()
+            before_mtime = db.stat().st_mtime_ns
+            result = task_store.paid_operation_preflight(
+                db,
+                created["job_id"],
+                "paid_generation",
+                "chatcut",
+                "agent_tool.video_gen_seedance2",
+                "approved-project-id",
+            )
+            self.assertTrue(result["ready_to_submit"])
+            self.assertEqual(result["status"], "ready")
+            self.assertEqual(hashlib.sha256(db.read_bytes()).hexdigest(), before_hash)
+            self.assertEqual(db.stat().st_mtime_ns, before_mtime)
+
+    def test_not_included_plan_blocks_before_approval_or_submission(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "tasks.sqlite3"
+            created = task_store.create_job(
+                db, PLUGIN_ROOT / "templates" / "video-job.example.json", write_source_context(root)
+            )
+            check_path = root / "blocked-capability.json"
+            check_path.write_text(json.dumps({
+                "capability_check_version": "1.0",
+                "provider": "chatcut",
+                "operation": "paid_generation",
+                "feature_key": "agent_tool.video_gen_seedance2",
+                "project_id": "approved-project-id",
+                "requested_parameters": {"model": "test"},
+                "status": "not_included",
+                "source": "provider_preflight",
+                "checked_at": task_store.utc_now(),
+                "plan": {"recommended_sku": "15_credit"},
+                "evidence": {"code": "FEATURE_NOT_INCLUDED", "charge_observed": False},
+            }), encoding="utf-8")
+            task_store.record_capability_check(db, created["job_id"], check_path)
+            result = task_store.paid_operation_preflight(
+                db,
+                created["job_id"],
+                "paid_generation",
+                "chatcut",
+                "agent_tool.video_gen_seedance2",
+                "approved-project-id",
+            )
+            self.assertFalse(result["ready_to_submit"])
+            self.assertEqual(result["status"], "blocked_plan")
+
+    def test_missing_or_unknown_capability_never_passes_preflight(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "tasks.sqlite3"
+            created = task_store.create_job(
+                db, PLUGIN_ROOT / "templates" / "video-job.example.json", write_source_context(root)
+            )
+            missing = task_store.paid_operation_preflight(
+                db, created["job_id"], "paid_generation", "chatcut", "feature", "project"
+            )
+            self.assertEqual(missing["status"], "capability_check_required")
+            self.assertFalse(missing["ready_to_submit"])
+
+            check_path = root / "unknown-capability.json"
+            check_path.write_text(json.dumps({
+                "capability_check_version": "1.0",
+                "provider": "chatcut",
+                "operation": "paid_generation",
+                "feature_key": "feature",
+                "project_id": "project",
+                "requested_parameters": {"model": "test"},
+                "status": "unknown",
+                "source": "read_only_entitlement",
+                "checked_at": task_store.utc_now(),
+                "plan": {},
+                "evidence": {"reason": "provider did not expose entitlement"},
+            }), encoding="utf-8")
+            task_store.record_capability_check(db, created["job_id"], check_path)
+            unknown = task_store.paid_operation_preflight(
+                db, created["job_id"], "paid_generation", "chatcut", "feature", "project"
+            )
+            self.assertEqual(unknown["status"], "capability_check_required")
+            self.assertFalse(unknown["ready_to_submit"])
+
+    def test_stale_capability_and_approval_before_preflight_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "tasks.sqlite3"
+            created = task_store.create_job(
+                db, PLUGIN_ROOT / "templates" / "video-job.example.json", write_source_context(root)
+            )
+            stale_path = root / "stale-capability.json"
+            stale_path.write_text(json.dumps({
+                "capability_check_version": "1.0",
+                "provider": "chatcut",
+                "operation": "paid_generation",
+                "feature_key": "feature",
+                "project_id": "project",
+                "requested_parameters": {"model": "test"},
+                "status": "available",
+                "source": "provider_preflight",
+                "checked_at": "2020-01-01T00:00:00Z",
+                "plan": {},
+                "evidence": {},
+            }), encoding="utf-8")
+            task_store.record_capability_check(db, created["job_id"], stale_path)
+            stale = task_store.paid_operation_preflight(
+                db, created["job_id"], "paid_generation", "chatcut", "feature", "project"
+            )
+            self.assertEqual(stale["status"], "capability_check_required")
+
+            scope_path = root / "approval.json"
+            scope_path.write_text(json.dumps({
+                "approval_scope_version": "2.0",
+                "operation": "paid_generation",
+                "content": "one generated clip",
+                "quantity": 1,
+                "target": "test timeline",
+                "capability_requirement": {
+                    "provider": "chatcut",
+                    "feature_key": "feature",
+                    "project_id": "project",
+                    "requested_parameters": {"model": "test"},
+                },
+                "cost_estimate": {
+                    "status": "unavailable",
+                    "amount": None,
+                    "currency": "CREDITS",
+                    "source": "provider_did_not_expose_estimate",
+                    "reason": "no estimate",
+                },
+                "billing_acceptance": {
+                    "mode": "actual_charge",
+                    "accepted": True,
+                    "scope": "this_operation_only",
+                    "maximum_amount": None,
+                    "acknowledged_estimate_unavailable": True,
+                },
+            }), encoding="utf-8")
+            task_store.record_approval(
+                db, created["job_id"], "paid_generation", "approved", scope_path, "tester"
+            )
+            future_check = json.loads(stale_path.read_text(encoding="utf-8"))
+            future_check["checked_at"] = (
+                datetime.now(timezone.utc) + timedelta(seconds=1)
+            ).isoformat(timespec="seconds").replace("+00:00", "Z")
+            stale_path.write_text(json.dumps(future_check), encoding="utf-8")
+            task_store.record_capability_check(db, created["job_id"], stale_path)
+            ordering = task_store.paid_operation_preflight(
+                db, created["job_id"], "paid_generation", "chatcut", "feature", "project"
+            )
+            self.assertEqual(ordering["status"], "approval_refresh_required")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/company-flowcut-producer/approval-scope.schema.json",
+  "title": "Company FlowCut Producer exact approval scope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "approval_scope_version",
+    "operation",
+    "content",
+    "quantity",
+    "target",
+    "cost_estimate",
+    "billing_acceptance"
+  ],
+  "properties": {
+    "approval_scope_version": { "const": "2.0" },
+    "operation": { "type": "string", "minLength": 1 },
+    "content": { "type": "string", "minLength": 1 },
+    "quantity": { "type": "integer", "minimum": 1 },
+    "duration_seconds": { "type": "number", "exclusiveMinimum": 0 },
+    "parameters": { "type": "object" },
+    "target": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["system", "project_id", "timeline"],
+          "properties": {
+            "system": { "type": "string", "minLength": 1 },
+            "project_id": { "type": "string", "minLength": 1 },
+            "timeline": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "capability_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "feature_key", "project_id", "requested_parameters"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "feature_key": { "type": "string", "minLength": 1 },
+        "project_id": { "type": "string", "minLength": 1 },
+        "requested_parameters": { "type": "object", "minProperties": 1 }
+      }
+    },
+    "cost_estimate": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "amount", "currency", "source"],
+          "properties": {
+            "status": { "const": "known" },
+            "amount": { "type": "number", "minimum": 0 },
+            "currency": { "type": "string", "minLength": 1 },
+            "source": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "amount", "currency", "source", "reason"],
+          "properties": {
+            "status": { "const": "unavailable" },
+            "amount": { "type": "null" },
+            "currency": { "type": "string", "minLength": 1 },
+            "source": { "type": "string", "minLength": 1 },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "billing_acceptance": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "accepted", "scope", "maximum_amount"],
+          "properties": {
+            "mode": { "const": "estimated_amount" },
+            "accepted": { "type": "boolean" },
+            "scope": { "const": "this_operation_only" },
+            "maximum_amount": { "type": "number", "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "accepted",
+            "scope",
+            "maximum_amount",
+            "acknowledged_estimate_unavailable"
+          ],
+          "properties": {
+            "mode": { "const": "actual_charge" },
+            "accepted": { "type": "boolean" },
+            "scope": { "const": "this_operation_only" },
+            "maximum_amount": { "type": "null" },
+            "acknowledged_estimate_unavailable": { "type": "boolean" }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "operation": { "const": "paid_generation" } },
+        "required": ["operation"]
+      },
+      "then": { "required": ["capability_requirement"] }
+    }
+  ]
+}

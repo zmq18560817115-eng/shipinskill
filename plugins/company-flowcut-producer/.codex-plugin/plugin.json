@@ -1,6 +1,6 @@
 {
   "name": "company-flowcut-producer",
-  "version": "0.3.0+codex.20260902090410",
+  "version": "0.3.0+codex.20260903095011",
   "description": "Company video orchestrator using read-only NAS assets and templates, deterministic batch plans, local runtime storage, and ChatCut.",
   "author": {
     "name": "Company Video Platform Team"

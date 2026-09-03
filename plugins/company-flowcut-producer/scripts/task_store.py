@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -50,7 +51,11 @@ LINK_TYPE_ALIASES = {
 }
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = PLUGIN_ROOT / "department-config" / "company-video.json"
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
+APPROVAL_SCOPE_VERSION = "2.0"
+CAPABILITY_CHECK_VERSION = "1.0"
+CAPABILITY_STATUSES = {"available", "not_included", "unknown", "error"}
+CAPABILITY_SOURCES = {"provider_preflight", "read_only_entitlement", "submit_gate", "manual_admin"}
 
 
 SCHEMA = """
@@ -105,6 +110,24 @@ CREATE TABLE IF NOT EXISTS approvals (
     decided_at      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS capability_checks (
+    check_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id          TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
+    provider        TEXT NOT NULL,
+    operation       TEXT NOT NULL,
+    feature_key     TEXT NOT NULL,
+    project_id      TEXT NOT NULL,
+    status          TEXT NOT NULL CHECK (status IN (
+                        'available','not_included','unknown','error'
+                    )),
+    source          TEXT NOT NULL CHECK (source IN (
+                        'provider_preflight','read_only_entitlement','submit_gate','manual_admin'
+                    )),
+    check_json      TEXT NOT NULL,
+    checked_at      TEXT NOT NULL,
+    recorded_at     TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version         INTEGER PRIMARY KEY,
     description     TEXT NOT NULL,
@@ -115,6 +138,9 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status_updated ON jobs(status, updated_at DE
 CREATE INDEX IF NOT EXISTS idx_events_job_id ON job_events(job_id, event_id);
 CREATE INDEX IF NOT EXISTS idx_links_job_id ON job_links(job_id, link_id);
 CREATE INDEX IF NOT EXISTS idx_approvals_job_id ON approvals(job_id, approval_id);
+CREATE INDEX IF NOT EXISTS idx_capability_checks_lookup ON capability_checks(
+    job_id, provider, operation, feature_key, project_id, check_id DESC
+);
 """
 
 
@@ -250,7 +276,7 @@ def _validate_read_schema(conn: sqlite3.Connection) -> None:
         raise ValueError(
             f"task database schema {recorded_version} is newer than supported {CURRENT_SCHEMA_VERSION}"
         )
-    required_tables = {"jobs", "job_events", "job_links", "approvals"}
+    required_tables = {"jobs", "job_events", "job_links", "approvals", "capability_checks"}
     tables = {
         str(row[0]) for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
@@ -264,6 +290,93 @@ def _validate_read_schema(conn: sqlite3.Connection) -> None:
         raise ValueError(
             "task database schema migration required; run init explicitly before read or list"
         )
+
+
+def _replace_nonfinite_numbers(value: Any) -> tuple[Any, bool]:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None, True
+    if isinstance(value, list):
+        changed = False
+        items = []
+        for item in value:
+            normalized, item_changed = _replace_nonfinite_numbers(item)
+            items.append(normalized)
+            changed = changed or item_changed
+        return items, changed
+    if isinstance(value, dict):
+        changed = False
+        items = {}
+        for key, item in value.items():
+            normalized, item_changed = _replace_nonfinite_numbers(item)
+            items[key] = normalized
+            changed = changed or item_changed
+        return items, changed
+    return value, False
+
+
+def _normalize_legacy_approval_scopes(conn: sqlite3.Connection, recorded_version: int) -> int:
+    if recorded_version >= 3:
+        return 0
+    rows = conn.execute(
+        "SELECT approval_id, decision, scope_json FROM approvals ORDER BY approval_id"
+    ).fetchall()
+    normalized_count = 0
+    for row in rows:
+        scope = json.loads(row["scope_json"])
+        if not isinstance(scope, dict):
+            continue
+        original_estimate = scope.get("estimated_credits")
+        scope, nonfinite_replaced = _replace_nonfinite_numbers(scope)
+        changed = nonfinite_replaced
+        if "cost_estimate" not in scope and "estimated_credits" in scope:
+            estimate_is_known = (
+                not isinstance(original_estimate, bool)
+                and isinstance(original_estimate, (int, float))
+                and math.isfinite(original_estimate)
+                and original_estimate >= 0
+            )
+            if estimate_is_known:
+                amount = float(original_estimate)
+                scope["approval_scope_version"] = "1.0-legacy-normalized"
+                scope["cost_estimate"] = {
+                    "status": "known",
+                    "amount": amount,
+                    "currency": "CREDITS",
+                    "source": "legacy_estimated_credits",
+                }
+                scope["billing_acceptance"] = {
+                    "mode": "estimated_amount",
+                    "accepted": row["decision"] == "approved",
+                    "scope": "this_operation_only",
+                    "maximum_amount": amount,
+                }
+            else:
+                scope["approval_scope_version"] = "1.0-legacy-unknown"
+                scope["cost_estimate"] = {
+                    "status": "unavailable",
+                    "amount": None,
+                    "currency": "CREDITS",
+                    "source": "legacy_non_finite_estimated_credits",
+                    "reason": "legacy record did not contain a finite provider estimate",
+                }
+                scope["billing_acceptance"] = {
+                    "mode": "actual_charge",
+                    "accepted": False,
+                    "scope": "this_operation_only",
+                    "maximum_amount": None,
+                    "acknowledged_estimate_unavailable": False,
+                }
+                scope["migration_review_required"] = "renew_exact_approval"
+            changed = True
+        elif nonfinite_replaced:
+            scope["migration_review_required"] = "renew_exact_approval"
+        if changed:
+            conn.execute(
+                "UPDATE approvals SET scope_json = ? WHERE approval_id = ?",
+                (_json(scope), row["approval_id"]),
+            )
+            normalized_count += 1
+    return normalized_count
 
 
 def init_db(db_path: Path) -> dict[str, Any]:
@@ -293,9 +406,10 @@ def init_db(db_path: Path) -> dict[str, Any]:
             migrations.append("ALTER TABLE jobs ADD COLUMN directives_json TEXT NOT NULL DEFAULT '[]'")
         for statement in migrations:
             conn.execute(statement)
+        approval_scopes_normalized = _normalize_legacy_approval_scopes(conn, recorded_version)
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, description, applied_at) VALUES (?, ?, ?)",
-            (CURRENT_SCHEMA_VERSION, "standalone task store with recovery metadata", utc_now()),
+            (CURRENT_SCHEMA_VERSION, "paid approval cost states and generation capability preflight", utc_now()),
         )
         conn.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
         tables = [row[0] for row in conn.execute(
@@ -307,6 +421,7 @@ def init_db(db_path: Path) -> dict[str, Any]:
         "storage_backend": "standalone_sqlite",
         "schema_version": CURRENT_SCHEMA_VERSION,
         "migrations_applied": len(migrations),
+        "approval_scopes_normalized": approval_scopes_normalized,
         "tables": tables,
     }
 
@@ -354,10 +469,17 @@ def generate_job_id() -> str:
     return f"VID-{stamp}-{''.join(secrets.choice(alphabet) for _ in range(6))}"
 
 
+def _reject_json_constant(value: str) -> Any:
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
 def read_json_object(path: Path | None) -> dict[str, Any]:
     if path is None:
         return {}
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(
+        path.read_text(encoding="utf-8"),
+        parse_constant=_reject_json_constant,
+    )
     if not isinstance(payload, dict):
         raise ValueError(f"JSON root must be an object: {path}")
     return payload
@@ -395,7 +517,172 @@ def validate_source_context(request: dict[str, Any], source_context: dict[str, A
 
 
 def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
+
+
+def _nonnegative_number(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ValueError(f"{field} must be a finite number that is zero or greater")
+    return float(value)
+
+
+def _parse_timestamp(value: Any, field: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be an ISO-8601 timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{field} must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field} must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def _validate_target(target: Any) -> None:
+    if isinstance(target, str):
+        if not target.strip():
+            raise ValueError("approval scope target must be a non-empty string or object")
+        return
+    if not isinstance(target, dict):
+        raise ValueError("approval scope target must be a non-empty string or object")
+    for field in ("system", "project_id", "timeline"):
+        if not isinstance(target.get(field), str) or not target[field].strip():
+            raise ValueError(f"approval scope target.{field} must be a non-empty string")
+
+
+def validate_approval_scope(scope: dict[str, Any], operation: str, decision: str) -> dict[str, Any]:
+    """Validate and normalize an exact approval scope without treating unknown cost as zero."""
+    normalized = dict(scope)
+    legacy_estimate = "cost_estimate" not in normalized and "estimated_credits" in normalized
+    if legacy_estimate:
+        amount = _nonnegative_number(normalized["estimated_credits"], "approval scope estimated_credits")
+        normalized["approval_scope_version"] = "1.0-legacy-normalized"
+        normalized["cost_estimate"] = {
+            "status": "known",
+            "amount": amount,
+            "currency": "CREDITS",
+            "source": "legacy_estimated_credits",
+        }
+        normalized["billing_acceptance"] = {
+            "mode": "estimated_amount",
+            "accepted": decision == "approved",
+            "scope": "this_operation_only",
+            "maximum_amount": amount,
+        }
+    elif normalized.get("approval_scope_version") != APPROVAL_SCOPE_VERSION:
+        raise ValueError(f"approval_scope_version must be {APPROVAL_SCOPE_VERSION}")
+
+    required_scope = {
+        "operation", "content", "quantity", "target", "cost_estimate", "billing_acceptance",
+    }
+    missing_scope = sorted(required_scope - set(normalized))
+    if missing_scope:
+        raise ValueError(f"approval scope missing fields: {', '.join(missing_scope)}")
+    if normalized.get("operation") != operation:
+        raise ValueError("approval scope operation must match --operation")
+    if not isinstance(normalized.get("content"), str) or not normalized["content"].strip():
+        raise ValueError("approval scope content must be a non-empty string")
+    _validate_target(normalized.get("target"))
+    if (
+        isinstance(normalized.get("quantity"), bool)
+        or not isinstance(normalized.get("quantity"), int)
+        or normalized["quantity"] <= 0
+    ):
+        raise ValueError("approval scope quantity must be a positive integer")
+    if "duration_seconds" in normalized:
+        _nonnegative_number(normalized["duration_seconds"], "approval scope duration_seconds")
+        if normalized["duration_seconds"] == 0:
+            raise ValueError("approval scope duration_seconds must be greater than zero")
+    if "parameters" in normalized and not isinstance(normalized["parameters"], dict):
+        raise ValueError("approval scope parameters must be an object")
+
+    estimate = normalized.get("cost_estimate")
+    if not isinstance(estimate, dict):
+        raise ValueError("approval scope cost_estimate must be an object")
+    estimate_status = estimate.get("status")
+    if estimate_status not in {"known", "unavailable"}:
+        raise ValueError("cost_estimate.status must be known or unavailable")
+    currency = estimate.get("currency")
+    if not isinstance(currency, str) or not currency.strip():
+        raise ValueError("cost_estimate.currency must be a non-empty string")
+    if not isinstance(estimate.get("source"), str) or not estimate["source"].strip():
+        raise ValueError("cost_estimate.source must be a non-empty string")
+    if estimate_status == "known":
+        estimate_amount = _nonnegative_number(estimate.get("amount"), "cost_estimate.amount")
+    else:
+        if "amount" not in estimate or estimate["amount"] is not None:
+            raise ValueError("unavailable cost_estimate.amount must be null")
+        if not isinstance(estimate.get("reason"), str) or not estimate["reason"].strip():
+            raise ValueError("unavailable cost_estimate.reason must be a non-empty string")
+        estimate_amount = None
+
+    acceptance = normalized.get("billing_acceptance")
+    if not isinstance(acceptance, dict):
+        raise ValueError("approval scope billing_acceptance must be an object")
+    if not isinstance(acceptance.get("accepted"), bool):
+        raise ValueError("billing_acceptance.accepted must be boolean")
+    if decision == "approved" and acceptance["accepted"] is not True:
+        raise ValueError("approved paid scope requires billing_acceptance.accepted=true")
+    if acceptance.get("scope") != "this_operation_only":
+        raise ValueError("billing_acceptance.scope must be this_operation_only")
+    if estimate_status == "known":
+        if acceptance.get("mode") != "estimated_amount":
+            raise ValueError("known estimate requires billing_acceptance.mode=estimated_amount")
+        maximum = acceptance.get("maximum_amount")
+        maximum_amount = _nonnegative_number(maximum, "billing_acceptance.maximum_amount")
+        if maximum_amount < float(estimate_amount):
+            raise ValueError("billing_acceptance.maximum_amount cannot be less than the estimate")
+    else:
+        if acceptance.get("mode") != "actual_charge":
+            raise ValueError("unavailable estimate requires billing_acceptance.mode=actual_charge")
+        if acceptance.get("maximum_amount") is not None:
+            raise ValueError("actual-charge acceptance without an estimate must use maximum_amount=null")
+        if not isinstance(acceptance.get("acknowledged_estimate_unavailable"), bool):
+            raise ValueError("billing_acceptance.acknowledged_estimate_unavailable must be boolean")
+        if decision == "approved" and acceptance.get("acknowledged_estimate_unavailable") is not True:
+            raise ValueError("actual-charge acceptance requires acknowledged_estimate_unavailable=true")
+
+    capability = normalized.get("capability_requirement")
+    if operation == "paid_generation" and not legacy_estimate and not isinstance(capability, dict):
+        raise ValueError("paid_generation approval requires capability_requirement")
+    if capability is not None:
+        if not isinstance(capability, dict):
+            raise ValueError("capability_requirement must be an object")
+        for field in ("provider", "feature_key", "project_id"):
+            if not isinstance(capability.get(field), str) or not capability[field].strip():
+                raise ValueError(f"capability_requirement.{field} must be a non-empty string")
+        if not isinstance(capability.get("requested_parameters"), dict) or not capability["requested_parameters"]:
+            raise ValueError("capability_requirement.requested_parameters must be a non-empty object")
+    if len(_json(normalized).encode("utf-8")) > 64 * 1024:
+        raise ValueError("approval scope exceeds 64 KiB")
+    return normalized
+
+
+def validate_capability_check(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("capability_check_version") != CAPABILITY_CHECK_VERSION:
+        raise ValueError(f"capability_check_version must be {CAPABILITY_CHECK_VERSION}")
+    normalized = dict(payload)
+    for field in ("provider", "operation", "feature_key", "project_id"):
+        if not isinstance(normalized.get(field), str) or not normalized[field].strip():
+            raise ValueError(f"capability check {field} must be a non-empty string")
+        normalized[field] = normalized[field].strip()
+    if normalized.get("status") not in CAPABILITY_STATUSES:
+        raise ValueError("capability check status is unsupported")
+    if normalized.get("source") not in CAPABILITY_SOURCES:
+        raise ValueError("capability check source is unsupported")
+    checked_at = _parse_timestamp(normalized.get("checked_at"), "capability check checked_at")
+    if (checked_at - datetime.now(timezone.utc)).total_seconds() > 300:
+        raise ValueError("capability check checked_at cannot be more than five minutes in the future")
+    if normalized["source"] == "submit_gate" and normalized["status"] == "available":
+        raise ValueError("a paid submit result cannot be used as an available preflight")
+    for field in ("plan", "evidence"):
+        if not isinstance(normalized.get(field), dict):
+            raise ValueError(f"capability check {field} must be an object")
+    if not isinstance(normalized.get("requested_parameters"), dict) or not normalized["requested_parameters"]:
+        raise ValueError("capability check requested_parameters must be a non-empty object")
+    if len(_json(normalized).encode("utf-8")) > 64 * 1024:
+        raise ValueError("capability check exceeds 64 KiB")
+    return normalized
 
 
 def _event(conn: sqlite3.Connection, job_id: str, event_type: str, *, from_status: str | None = None,
@@ -468,6 +755,11 @@ def read_job(db_path: Path, job_id: str) -> dict[str, Any]:
             "SELECT operation, decision, scope_json, actor, decided_at FROM approvals WHERE job_id = ? ORDER BY approval_id",
             (job_id,),
         )]
+        capability_checks = [dict(item) for item in conn.execute(
+            "SELECT check_id, provider, operation, feature_key, project_id, status, source, "
+            "check_json, checked_at, recorded_at FROM capability_checks WHERE job_id = ? ORDER BY check_id",
+            (job_id,),
+        )]
         events = [dict(item) for item in conn.execute(
             "SELECT event_id, occurred_at, event_type, from_status, to_status, payload_json "
             "FROM job_events WHERE job_id = ? ORDER BY event_id",
@@ -481,9 +773,17 @@ def read_job(db_path: Path, job_id: str) -> dict[str, Any]:
         item["metadata"] = json.loads(item.pop("metadata_json"))
     for item in approvals:
         item["scope"] = json.loads(item.pop("scope_json"))
+    for item in capability_checks:
+        item["check"] = json.loads(item.pop("check_json"))
     for item in events:
         item["payload"] = json.loads(item.pop("payload_json"))
-    payload.update({"storage_backend": "standalone_sqlite", "links": links, "approvals": approvals, "events": events})
+    payload.update({
+        "storage_backend": "standalone_sqlite",
+        "links": links,
+        "approvals": approvals,
+        "capability_checks": capability_checks,
+        "events": events,
+    })
     return payload
 
 
@@ -588,20 +888,7 @@ def record_approval(db_path: Path, job_id: str, operation: str, decision: str, s
     scope = read_json_object(scope_path)
     if not scope:
         raise ValueError("approval scope cannot be empty")
-    required_scope = {"operation", "content", "quantity", "target", "estimated_credits"}
-    missing_scope = sorted(required_scope - set(scope))
-    if missing_scope:
-        raise ValueError(f"approval scope missing fields: {', '.join(missing_scope)}")
-    if scope.get("operation") != operation:
-        raise ValueError("approval scope operation must match --operation")
-    if not isinstance(scope.get("content"), str) or not scope["content"].strip():
-        raise ValueError("approval scope content must be a non-empty string")
-    if not isinstance(scope.get("target"), str) or not scope["target"].strip():
-        raise ValueError("approval scope target must be a non-empty string")
-    if not isinstance(scope.get("quantity"), int) or scope["quantity"] <= 0:
-        raise ValueError("approval scope quantity must be a positive integer")
-    if not isinstance(scope.get("estimated_credits"), (int, float)) or scope["estimated_credits"] < 0:
-        raise ValueError("approval scope estimated_credits must be zero or greater")
+    scope = validate_approval_scope(scope, operation.strip(), decision)
     scope_hash = hashlib.sha256(_json(scope).encode("utf-8")).hexdigest()
     require_existing_db(db_path)
     with db_connection(db_path) as conn:
@@ -629,12 +916,194 @@ def record_approval(db_path: Path, job_id: str, operation: str, decision: str, s
     return read_job(db_path, job_id)
 
 
+def record_capability_check(db_path: Path, job_id: str, check_path: Path) -> dict[str, Any]:
+    """Append provider capability/plan evidence without interpreting unknown as available."""
+    _require_job_id(job_id)
+    check = validate_capability_check(read_json_object(check_path))
+    check_hash = hashlib.sha256(_json(check).encode("utf-8")).hexdigest()
+    require_existing_db(db_path)
+    with db_connection(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if conn.execute("SELECT 1 FROM jobs WHERE job_id = ?", (job_id,)).fetchone() is None:
+                raise ValueError("job not found")
+            now = utc_now()
+            cursor = conn.execute(
+                "INSERT INTO capability_checks("
+                "job_id, provider, operation, feature_key, project_id, status, source, check_json, checked_at, recorded_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    job_id,
+                    check["provider"],
+                    check["operation"],
+                    check["feature_key"],
+                    check["project_id"],
+                    check["status"],
+                    check["source"],
+                    _json(check),
+                    check["checked_at"],
+                    now,
+                ),
+            )
+            conn.execute(
+                "UPDATE jobs SET revision = revision + 1, updated_at = ? WHERE job_id = ?",
+                (now, job_id),
+            )
+            _event(conn, job_id, "capability_checked", payload={
+                "check_id": cursor.lastrowid,
+                "provider": check["provider"],
+                "operation": check["operation"],
+                "feature_key": check["feature_key"],
+                "project_id": check["project_id"],
+                "status": check["status"],
+                "source": check["source"],
+                "checked_at": check["checked_at"],
+                "check_sha256": check_hash,
+            })
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return read_job(db_path, job_id)
+
+
+def paid_operation_preflight(
+    db_path: Path,
+    job_id: str,
+    operation: str,
+    provider: str,
+    feature_key: str,
+    project_id: str,
+    max_age_seconds: int = 900,
+) -> dict[str, Any]:
+    """Read-only gate for paid submission using fresh capability evidence and exact approval."""
+    _require_job_id(job_id)
+    values = {
+        "operation": operation.strip(),
+        "provider": provider.strip(),
+        "feature_key": feature_key.strip(),
+        "project_id": project_id.strip(),
+    }
+    for field, value in values.items():
+        if not value:
+            raise ValueError(f"{field} is required")
+    if isinstance(max_age_seconds, bool) or not isinstance(max_age_seconds, int) or max_age_seconds <= 0:
+        raise ValueError("max_age_seconds must be a positive integer")
+
+    with read_only_db_connection(db_path) as conn:
+        if conn.execute("SELECT 1 FROM jobs WHERE job_id = ?", (job_id,)).fetchone() is None:
+            raise ValueError("job not found")
+        capability_row = conn.execute(
+            "SELECT check_id, provider, operation, feature_key, project_id, status, source, "
+            "check_json, checked_at, recorded_at FROM capability_checks "
+            "WHERE job_id = ? AND provider = ? AND operation = ? AND feature_key = ? AND project_id = ? "
+            "ORDER BY check_id DESC LIMIT 1",
+            (job_id, values["provider"], values["operation"], values["feature_key"], values["project_id"]),
+        ).fetchone()
+        approval_row = conn.execute(
+            "SELECT approval_id, operation, decision, scope_json, actor, decided_at FROM approvals "
+            "WHERE job_id = ? AND operation = ? ORDER BY approval_id DESC LIMIT 1",
+            (job_id, values["operation"]),
+        ).fetchone()
+
+    capability: dict[str, Any] | None = None
+    if capability_row is not None:
+        capability = dict(capability_row)
+        capability["check"] = json.loads(capability.pop("check_json"))
+        age_seconds = max(
+            0,
+            int((datetime.now(timezone.utc) - _parse_timestamp(capability["checked_at"], "checked_at")).total_seconds()),
+        )
+        capability["age_seconds"] = age_seconds
+        capability["fresh"] = age_seconds <= max_age_seconds
+
+    approval: dict[str, Any] | None = None
+    if approval_row is not None:
+        approval = dict(approval_row)
+        approval["scope"] = json.loads(approval.pop("scope_json"))
+        approval["scope_sha256"] = hashlib.sha256(_json(approval["scope"]).encode("utf-8")).hexdigest()
+
+    result: dict[str, Any] = {
+        "database": str(db_path),
+        "storage_backend": "standalone_sqlite",
+        "job_id": job_id,
+        "operation": values["operation"],
+        "provider": values["provider"],
+        "feature_key": values["feature_key"],
+        "project_id": values["project_id"],
+        "max_age_seconds": max_age_seconds,
+        "ready_to_submit": False,
+        "status": "capability_check_required",
+        "reason": "no exact capability or plan check is recorded",
+        "capability_check": capability,
+        "approval": approval,
+    }
+    if capability is None:
+        return result
+    if not capability["fresh"]:
+        result["reason"] = "the exact capability or plan check is stale"
+        return result
+    if capability["status"] in {"unknown", "error"}:
+        result["reason"] = f"capability status is {capability['status']}"
+        return result
+    if capability["status"] == "not_included":
+        result.update({
+            "status": "blocked_plan",
+            "reason": "the current plan does not include the exact generation capability",
+        })
+        return result
+    if approval is None:
+        result.update({"status": "approval_required", "reason": "no approval is recorded for this operation"})
+        return result
+    if approval["decision"] != "approved":
+        result.update({"status": "approval_rejected", "reason": "the latest decision rejects this operation"})
+        return result
+    if _parse_timestamp(approval["decided_at"], "approval decided_at") < _parse_timestamp(
+        capability["checked_at"], "capability checked_at"
+    ):
+        result.update({
+            "status": "approval_refresh_required",
+            "reason": "approval must be recorded after the current capability preflight",
+        })
+        return result
+    requirement = approval["scope"].get("capability_requirement")
+    exact_requirement = {
+        "provider": values["provider"],
+        "feature_key": values["feature_key"],
+        "project_id": values["project_id"],
+    }
+    parameters_match = (
+        isinstance(requirement, dict)
+        and requirement.get("requested_parameters") == capability["check"].get("requested_parameters")
+    )
+    if (
+        not isinstance(requirement, dict)
+        or any(requirement.get(key) != value for key, value in exact_requirement.items())
+        or not parameters_match
+    ):
+        result.update({
+            "status": "approval_scope_mismatch",
+            "reason": "approval does not match the exact provider, feature, project, and requested parameters",
+        })
+        return result
+    result.update({
+        "ready_to_submit": True,
+        "status": "ready",
+        "reason": "fresh capability evidence and exact current approval are both present",
+    })
+    return result
+
+
 def set_cost(db_path: Path, job_id: str, estimated: float | None, actual: float | None, currency: str) -> dict[str, Any]:
     _require_job_id(job_id)
     if estimated is None and actual is None:
         raise ValueError("provide estimated or actual cost")
-    if (estimated is not None and estimated < 0) or (actual is not None and actual < 0):
-        raise ValueError("cost cannot be negative")
+    if estimated is not None:
+        _nonnegative_number(estimated, "estimated cost")
+    if actual is not None:
+        _nonnegative_number(actual, "actual cost")
+    if not currency.strip():
+        raise ValueError("currency is required")
     require_existing_db(db_path)
     with db_connection(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -821,6 +1290,16 @@ def build_parser() -> argparse.ArgumentParser:
     approval.add_argument("--decision", choices=["approved", "rejected"], required=True)
     approval.add_argument("--scope-file", type=Path, required=True)
     approval.add_argument("--actor", required=True)
+    capability = sub.add_parser("record-capability-check")
+    capability.add_argument("--job-id", required=True)
+    capability.add_argument("--check-file", type=Path, required=True)
+    preflight = sub.add_parser("preflight-paid-operation")
+    preflight.add_argument("--job-id", required=True)
+    preflight.add_argument("--operation", required=True)
+    preflight.add_argument("--provider", required=True)
+    preflight.add_argument("--feature-key", required=True)
+    preflight.add_argument("--project-id", required=True)
+    preflight.add_argument("--max-age-seconds", type=int, default=900)
     cost = sub.add_parser("set-cost")
     cost.add_argument("--job-id", required=True)
     cost.add_argument("--estimated", type=float)
@@ -861,8 +1340,22 @@ def main() -> int:
         payload = add_link(db_path, args.job_id, args.type, args.value, args.metadata_file)
     elif args.command == "record-approval":
         payload = record_approval(db_path, args.job_id, args.operation, args.decision, args.scope_file, args.actor)
-    else:
+    elif args.command == "record-capability-check":
+        payload = record_capability_check(db_path, args.job_id, args.check_file)
+    elif args.command == "preflight-paid-operation":
+        payload = paid_operation_preflight(
+            db_path,
+            args.job_id,
+            args.operation,
+            args.provider,
+            args.feature_key,
+            args.project_id,
+            args.max_age_seconds,
+        )
+    elif args.command == "set-cost":
         payload = set_cost(db_path, args.job_id, args.estimated, args.actual, args.currency)
+    else:
+        raise ValueError(f"unsupported command: {args.command}")
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 

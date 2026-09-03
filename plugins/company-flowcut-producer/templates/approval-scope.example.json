@@ -1,12 +1,42 @@
 {
+  "approval_scope_version": "2.0",
   "operation": "paid_generation",
-  "content": "11 段英文产品配音",
-  "quantity": 11,
-  "duration_seconds": 45,
+  "content": "1 段 5 秒夜间备奶补充镜头",
+  "quantity": 1,
+  "duration_seconds": 5,
   "parameters": {
-    "voice": "user-selected",
-    "language": "en"
+    "model": "Seedance 2.5",
+    "aspect_ratio": "9:16",
+    "resolution": "720p"
   },
-  "target": "approved ChatCut project and named timeline",
-  "estimated_credits": 20
+  "target": {
+    "system": "chatcut",
+    "project_id": "approved-project-id",
+    "timeline": "new internal review timeline"
+  },
+  "capability_requirement": {
+    "provider": "chatcut",
+    "feature_key": "agent_tool.video_gen_seedance2",
+    "project_id": "approved-project-id",
+    "requested_parameters": {
+      "model": "Seedance 2.5",
+      "duration_seconds": 5,
+      "aspect_ratio": "9:16",
+      "resolution": "720p"
+    }
+  },
+  "cost_estimate": {
+    "status": "unavailable",
+    "amount": null,
+    "currency": "CREDITS",
+    "source": "provider_did_not_expose_estimate",
+    "reason": "当前生成工具未提供本次操作的积分预估值"
+  },
+  "billing_acceptance": {
+    "mode": "actual_charge",
+    "accepted": true,
+    "scope": "this_operation_only",
+    "maximum_amount": null,
+    "acknowledged_estimate_unavailable": true
+  }
 }

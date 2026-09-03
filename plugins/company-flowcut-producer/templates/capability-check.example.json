@@ -1,0 +1,26 @@
+{
+  "capability_check_version": "1.0",
+  "provider": "chatcut",
+  "operation": "paid_generation",
+  "feature_key": "agent_tool.video_gen_seedance2",
+  "project_id": "approved-project-id",
+  "requested_parameters": {
+    "model": "Seedance 2.5",
+    "duration_seconds": 5,
+    "aspect_ratio": "9:16",
+    "resolution": "720p"
+  },
+  "status": "not_included",
+  "source": "provider_preflight",
+  "checked_at": "2026-09-03T01:30:00Z",
+  "plan": {
+    "name": null,
+    "recommended_sku": "15_credit"
+  },
+  "evidence": {
+    "code": "FEATURE_NOT_INCLUDED",
+    "reason": "feature_not_included",
+    "job_created": false,
+    "charge_observed": false
+  }
+}

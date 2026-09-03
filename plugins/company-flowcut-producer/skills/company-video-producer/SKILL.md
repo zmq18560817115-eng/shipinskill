@@ -19,6 +19,7 @@ description: 使用公司 NAS 产品资料、共享素材、批准模板脚本�
 8. 新建任务才运行 `task_store.py create`，并传入 `company_context.py get-product --summary-only` 生成的无正文来源摘要。恢复任务先执行 `task_store.py list`，不得先创建新记录。所有 ChatCut 写入前必须有 `job_id`。
 9. `task_store.py read/list` 是严格只读操作，不创建数据库、不启用 WAL、不执行迁移。它们提示需要迁移时，必须明确运行 `task_store.py init`，不能把一次只读预检变成隐式写入。
 10. 用 ChatCut 只读项目列表验证工具和当前用户授权。缺少 ChatCut 工具或登录时停止媒体写入，不伪造项目或导出结果。
+11. 任何 AI 视频、图片、配音、音乐或其他付费生成在请求费用确认前，先对精确 `provider + feature_key + project_id + requested_parameters` 调用 ChatCut 当前公开的只读 entitlement/capability/plan/preflight 能力；参数至少覆盖本次模型、时长、画幅、分辨率或该工具对应的关键规格。把结果按 `templates/capability-check.schema.json` 写入本机工作目录，再用 `task_store.py record-capability-check` 保存。不得用真正的付费提交当作能力探针；连接没有公开只读预检时记录 `status=unknown` 并停止生成，不能假定套餐可用。
 
 ## 执行原则
 
@@ -30,10 +31,12 @@ description: 使用公司 NAS 产品资料、共享素材、批准模板脚本�
 - 真实素材快剪优先从 `prepare-product` 返回的产品同目录媒体中选择；先校验可见品牌、数字和内嵌声明，再上传最小必要集合。品牌或声明冲突时，工程、时间线和画面必须显式标为内部审阅，禁止直接进入发布导出。
 - ChatCut 只能导入 `chatcut_handoff.import_paths`，并按 `placements` 的镜头顺序、时间起点、时长、源区间和适配方式放置。导入后记录 `asset_id -> ChatCut asset_id` 映射及 `selection_manifest_sha256`；不得扫描整个素材库后自由替换。
 - 批量混剪只能消费 `chatcut_batch_handoff`。共享素材只导入一次；每个输出按 `timeline_name` 创建独立命名时间线或独立项目，记录模板 ID、revision、模板 SHA-256、逐输出选择清单 SHA-256 和 ChatCut 引用。单个输出失败不得冒充整批成功。
-- 每次付费生成前，列出本次操作的内容、数量、时长、参数、目标项目/版本和预计积分或费用。只有当前用户明确同意这一精确范围后，才能用 `task_store.py record-approval` 记录并提交。
+- 每次付费生成先运行套餐能力预检。只有最新精确记录为 `available` 且未超过约定有效期，才向用户列出本次内容、数量、时长、参数、目标项目/版本和费用状态。`not_included` 进入 `blocked_plan`；`unknown`、`error`、缺失或过期记录进入 `capability_check_required`，均不得提交。
+- 付费审批使用 `templates/approval-scope.schema.json`。有预估时写 `cost_estimate.status=known` 和有限数字；工具没有提供预估时写 `status=unavailable`、`amount=null`、原因与来源，绝不能写 `0`、`NaN` 或臆测值。只有当前用户对该次精确范围明确接受实际扣费时，才写 `billing_acceptance.mode=actual_charge`、`accepted=true`、`scope=this_operation_only` 和 `acknowledged_estimate_unavailable=true`。
+- 能力预检完成后才用 `task_store.py record-approval` 记录当前决定；随后运行只读的 `task_store.py preflight-paid-operation`。只有返回 `ready_to_submit=true` 才能调用生成工具。审批必须晚于当前能力预检，且其中的 provider、feature、project 和 requested parameters 必须完全一致。
 - 删除、覆盖、批量重排等破坏性操作必须单独确认。快速混剪不等于授权覆盖旧版本。
 - 最终导出需要人工确认、已配置输出目录和通过质检；导出 ID/路径用 `task_store.py add-link` 记录。
-- 成本估计与实际消耗用 `task_store.py set-cost` 记录。不得把未知费用填成 0。
+- 成本实际消耗在生成结果可核对后用 `task_store.py set-cost --actual` 记录；`jobs.estimated_cost` 只保存提供方给出的已知有限预估，未知预估保持 `NULL`。套餐门禁拒绝且没有生成作业时，不写虚构的实际成本。
 - ChatCut 工具返回成功、时间线可见、质检证据和可播放导出共同构成完成证据。
 
 ## 恢复

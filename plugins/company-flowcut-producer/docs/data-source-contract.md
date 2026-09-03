@@ -56,10 +56,23 @@
 - `job_events`：追加式状态、审批、成本和链接事件。
 - `job_links`：ChatCut 项目、时间线、生成与导出引用。
 - `approvals`：精确操作范围、决定和确认人。
+- `capability_checks`：精确 provider、operation、feature、project 的带时间戳能力/套餐证据。
 
 写入连接启用外键、WAL、超时和事务，并用版本表执行幂等迁移。UNC 路径、Windows 映射网络盘以及与产品/素材根重叠的路径会被拒绝；正式使用要求本机存放和单任务单写者。
 
 `task_store.py read` 与 `list` 使用 SQLite 只读 URI 和 `query_only`，不会创建目录、切换 journal mode 或执行迁移。旧库需要先显式运行 `task_store.py init`；这避免“只读预检”改变数据库物理哈希或修改时间。
+
+从 Schema v2 升级到 v3 时，旧 `estimated_credits` 有限数字会规范化为旧版已知预估结构；`NaN`、无穷大、负数或其他无效预估会转成 `amount=null`，并标记 `migration_review_required=renew_exact_approval`。迁移不会凭旧的非标准数字推断用户接受实际扣费，必须重新取得正式审批。
+
+### 3.1 付费费用与能力门禁
+
+`approval-scope.schema.json` 定义费用审批 v2。已知预估使用 `cost_estimate.status=known` 和有限非负数；提供方没有给出预估时使用 `status=unavailable`、`amount=null`、`source` 和 `reason`。若用户仍同意该次精确操作按实际扣费，`billing_acceptance` 必须同时写入 `mode=actual_charge`、`accepted=true`、`scope=this_operation_only`、`maximum_amount=null` 与 `acknowledged_estimate_unavailable=true`。未知费用不能用 0、`NaN`、无穷大或缺失字段表达。
+
+`capability-check.schema.json` 定义生成能力/套餐预检 v1。记录精确 `provider + operation + feature_key + project_id + requested_parameters`、`status`、`source`、`checked_at`、套餐摘要和提供方证据；视频请求参数至少覆盖模型、时长、画幅和分辨率。`available`、`not_included`、`unknown`、`error` 是互斥状态；由付费提交门禁返回的 `available` 不被接受，因为此时提交可能已经开始并产生费用。
+
+标准顺序是：调用提供方只读 entitlement/capability/plan/preflight → `record-capability-check` → 能力可用后向当前用户取得精确费用审批 → `record-approval` → `preflight-paid-operation` → 仅在 `ready_to_submit=true` 时提交生成。提交前门禁本身使用 SQLite 只读连接；能力记录缺失、超过有效期、不包含套餐，或审批早于能力检查、provider/feature/project/requested parameters 不一致时均返回阻塞状态。
+
+如果 ChatCut 当前连接没有公开只读能力查询，应记录 `status=unknown` 并停止生成；不得通过真正提交反复试探。过去已发生的提交门禁拒绝可按 `source=submit_gate` 保存为 `not_included` 恢复证据，但不能记录为 `available`。`manual_admin` 仅用于受控管理员提供的当前套餐证据，不是普通用户或模型猜测。
 
 ## 4. 本机工作目录
 
@@ -91,6 +104,9 @@ python scripts/task_store.py init
 python scripts/task_store.py create --request-file <任务需求.json> --source-context-file <来源摘要.json>
 python scripts/task_store.py list
 python scripts/task_store.py read --job-id <JOB_ID>
+python scripts/task_store.py record-capability-check --job-id <JOB_ID> --check-file <能力预检.json>
+python scripts/task_store.py record-approval --job-id <JOB_ID> --operation paid_generation --decision approved --scope-file <精确审批.json> --actor <当前用户标签>
+python scripts/task_store.py preflight-paid-operation --job-id <JOB_ID> --operation paid_generation --provider chatcut --feature-key <FEATURE_KEY> --project-id <PROJECT_ID>
 ```
 
-来源摘要必须来自 `--summary-only` 或同等脱敏结果，只保存路径、时间和哈希，不允许包含文档正文。付费审批、指令、阶段、成本和 ChatCut 引用分别使用 `record-approval`、`record-directive`、`set-stage`、`set-cost` 和 `add-link`。任务库不提供删除命令。
+来源摘要必须来自 `--summary-only` 或同等脱敏结果，只保存路径、时间和哈希，不允许包含文档正文。能力/套餐结果、付费审批、指令、阶段、成本和 ChatCut 引用分别使用 `record-capability-check`、`record-approval`、`record-directive`、`set-stage`、`set-cost` 和 `add-link`。任务库不提供删除命令。

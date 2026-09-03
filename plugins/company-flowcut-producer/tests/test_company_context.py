@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -121,7 +122,12 @@ class CompanyContextTests(unittest.TestCase):
                     "output_root": {"path": ""},
                 }
             }
-            payload = context.preflight(config)
+            with mock.patch.dict(
+                os.environ,
+                {"COMPANY_VIDEO_DB_PATH": "", "COMPANY_VIDEO_WORK_ROOT": ""},
+                clear=False,
+            ):
+                payload = context.preflight(config)
             self.assertTrue(payload["ok_for_task_creation"])
             self.assertEqual(payload["task_store"]["backend"], "standalone_sqlite")
             self.assertEqual(payload["asset_sources"], [])
@@ -144,7 +150,12 @@ class CompanyContextTests(unittest.TestCase):
                     "local_work_root": {"default_local": str(root / "runtime" / "work")},
                 }
             }
-            payload = context.preflight(config)
+            with mock.patch.dict(
+                os.environ,
+                {"COMPANY_VIDEO_DB_PATH": "", "COMPANY_VIDEO_WORK_ROOT": ""},
+                clear=False,
+            ):
+                payload = context.preflight(config)
             self.assertFalse(payload["ok_for_task_creation"])
             self.assertIn("task_database_overlaps_source_root", payload["data_boundary"]["violations"])
             self.assertIn("local_work_root_overlaps_source_root", payload["data_boundary"]["violations"])
